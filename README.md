@@ -74,3 +74,19 @@ Special thanks to the **Hugging Face** team for the amazing [transformers.js](ht
 ---
 
 Built with ❤️ for the future of local AI.
+
+---
+
+## 📚 Documentation
+
+- [**🏗️ Architecture & Privacy**](docs/architecture.md): Deep dive into our local-first, WebGPU-powered engine.
+- [**🧠 Model Details**](docs/models.md): Understanding the SmolLM and Qwen configurations.
+- [**🤖 AI Agent Context**](AGENTS.md): Contextual information for AI coding assistants.
+
+---
+
+## 🤝 Community & Support
+
+- [**Contributing Guidelines**](CONTRIBUTING.md): How to help improve Browser LLM Chat.
+- [**Code of Conduct**](CODE_OF_CONDUCT.md): Our commitment to a welcoming environment.
+- [**License**](LICENSE): This project is released under the MIT License.
