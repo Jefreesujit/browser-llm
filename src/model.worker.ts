@@ -7,8 +7,7 @@ import {
 } from "@huggingface/transformers";
 import type { Tensor } from "@huggingface/transformers";
 
-import { MODEL_DEFINITIONS } from "./models";
-import type { ChatMessage, ModelMode, WorkerRequest, WorkerResponse } from "./types";
+import type { ChatMessage, ModelDescriptor, WorkerRequest, WorkerResponse } from "./types";
 
 const GENERATION_CONFIG = {
   max_new_tokens: 2048,
@@ -30,24 +29,28 @@ type TextGeneratorInstance = {
   ): Promise<Array<{ generated_text: Array<{ role: string; content: string }> }>>;
 };
 
-let activeMode: ModelMode | null = null;
+let activeModelId: string | null = null;
 let textGenerator: TextGeneratorInstance | null = null;
 let processor: ProcessorInstance | null = null;
 let visionModel: VisionModelInstance | null = null;
 let loadingPromise: Promise<void> | null = null;
-let loadingMode: ModelMode | null = null;
+let loadingModelId: string | null = null;
 
 const postMessageToUi = (message: WorkerResponse) => {
   self.postMessage(message);
 };
 
-const postError = (mode: ModelMode, error: unknown) => {
+const postError = (modelId: string, error: unknown) => {
   const message =
     error instanceof Error ? error.message : "Something went wrong while running the model.";
-  postMessageToUi({ type: "ERROR", payload: { mode, message } });
+  postMessageToUi({ type: "ERROR", payload: { modelId, message } });
+  postMessageToUi({
+    type: "MODEL_LOAD_RESULT",
+    payload: { modelId, status: "failed_on_device", message },
+  });
 };
 
-const getProgressHandler = (mode: ModelMode) => {
+const getProgressHandler = (modelId: string) => {
   return (event: {
     file?: string;
     name?: string;
@@ -63,7 +66,7 @@ const getProgressHandler = (mode: ModelMode) => {
     postMessageToUi({
       type: "LOAD_PROGRESS",
       payload: {
-        mode,
+        modelId,
         file: event.file ?? event.name ?? "model file",
         progress: typeof event.progress === "number" ? event.progress : null,
         loaded: typeof event.loaded === "number" ? event.loaded : null,
@@ -73,11 +76,11 @@ const getProgressHandler = (mode: ModelMode) => {
   };
 };
 
-const postInitialLoadProgress = (mode: ModelMode, label: string) => {
+const postInitialLoadProgress = (modelId: string, label: string) => {
   postMessageToUi({
     type: "LOAD_PROGRESS",
     payload: {
-      mode,
+      modelId,
       file: label,
       progress: 0,
       loaded: null,
@@ -99,13 +102,13 @@ const browserSupportsWebGpuFp16 = async () => {
   }
 };
 
-const assertChatTemplate = (mode: ModelMode, generator: TextGeneratorInstance) => {
+const assertChatTemplate = (model: ModelDescriptor, generator: TextGeneratorInstance) => {
   if (generator.tokenizer?.chat_template) {
     return;
   }
 
   throw new Error(
-    `${MODEL_DEFINITIONS[mode].modelName} finished loading without a chat template. Reload the page or switch models.`,
+    `${model.label} finished loading without a chat template. Reload the page or choose a different model.`,
   );
 };
 
@@ -114,28 +117,11 @@ const isRecoverableTextLoadError = (error: unknown) => {
   return /(q4f16|fp16|shader-f16|dtype|precision|not found|404|missing)/i.test(message);
 };
 
-const toFriendlyTextLoadError = (mode: ModelMode, error: unknown) => {
-  if (mode !== "thinking") {
-    return error;
-  }
-
-  const originalMessage =
-    error instanceof Error ? error.message : "Something went wrong while loading the model.";
-  const model = MODEL_DEFINITIONS[mode];
-
-  return new Error(
-    `${model.modelName} ${model.paramsLabel} could not load in this browser. Try Chrome or Edge with WebGPU enabled, close other GPU-heavy tabs, or switch back to the Fast model. Original error: ${originalMessage}`,
-  );
-};
-
-const loadTextGenerator = async (mode: ModelMode, definition: (typeof MODEL_DEFINITIONS)[ModelMode]) => {
-  const preferredDtype = definition.preferredDtype ?? "q4f16";
-  const fallbackDtype = definition.fallbackDtype ?? null;
+const loadTextGenerator = async (model: ModelDescriptor) => {
+  const preferredDtype = model.runtime.preferredDtype ?? "q4f16";
+  const fallbackDtype = model.runtime.fallbackDtype ?? null;
   const supportsFp16 = await browserSupportsWebGpuFp16();
-
-  const dtypeCandidates: Array<
-    "q4f16" | "q4" | "q8" | "int8" | "uint8" | "fp16" | "fp32"
-  > =
+  const dtypeCandidates =
     preferredDtype === "q4f16" && !supportsFp16
       ? fallbackDtype
         ? [fallbackDtype]
@@ -146,10 +132,10 @@ const loadTextGenerator = async (mode: ModelMode, definition: (typeof MODEL_DEFI
 
   for (const dtype of dtypeCandidates) {
     try {
-      return (await pipeline("text-generation", definition.modelId, {
+      return (await pipeline("text-generation", model.hf.modelId, {
         device: "webgpu",
         dtype,
-        progress_callback: getProgressHandler(mode),
+        progress_callback: getProgressHandler(model.id),
       })) as TextGeneratorInstance;
     } catch (error) {
       lastError = error;
@@ -162,77 +148,80 @@ const loadTextGenerator = async (mode: ModelMode, definition: (typeof MODEL_DEFI
     supportsFp16 &&
     isRecoverableTextLoadError(lastError)
   ) {
-    return (await pipeline("text-generation", definition.modelId, {
+    return (await pipeline("text-generation", model.hf.modelId, {
       device: "webgpu",
       dtype: fallbackDtype,
-      progress_callback: getProgressHandler(mode),
+      progress_callback: getProgressHandler(model.id),
     })) as TextGeneratorInstance;
   }
 
-  throw toFriendlyTextLoadError(mode, lastError);
+  throw lastError;
 };
 
 const disposeCurrentModel = async () => {
-  await Promise.allSettled([
-    textGenerator?.dispose?.(),
-    visionModel?.dispose?.(),
-  ]);
+  await Promise.allSettled([textGenerator?.dispose?.(), visionModel?.dispose?.()]);
 
   textGenerator = null;
   processor = null;
   visionModel = null;
-  activeMode = null;
+  activeModelId = null;
 };
 
-const ensureModelReady = async (mode: ModelMode) => {
-  if (activeMode === mode && (textGenerator || (processor && visionModel))) {
+const loadVisionModel = async (model: ModelDescriptor) => {
+  if (model.runtime.visionLoaderKind !== "qwen3_5") {
+    throw new Error("This vision loader is not supported in the browser worker yet.");
+  }
+
+  const progressHandler = getProgressHandler(model.id);
+  const [nextProcessor, nextVisionModel] = await Promise.all([
+    AutoProcessor.from_pretrained(model.hf.modelId, {
+      progress_callback: progressHandler,
+    }),
+    Qwen3_5ForConditionalGeneration.from_pretrained(model.hf.modelId, {
+      dtype: {
+        embed_tokens: "q4",
+        vision_encoder: "fp16",
+        decoder_model_merged: "q4",
+      },
+      device: "webgpu",
+      progress_callback: progressHandler,
+    }),
+  ]);
+
+  processor = nextProcessor;
+  visionModel = nextVisionModel;
+};
+
+const ensureModelReady = async (model: ModelDescriptor) => {
+  if (activeModelId === model.id && (textGenerator || (processor && visionModel))) {
     return;
   }
 
-  if (loadingPromise && loadingMode === mode) {
+  if (loadingPromise && loadingModelId === model.id) {
     await loadingPromise;
     return;
   }
 
-  const definition = MODEL_DEFINITIONS[mode];
-
-  loadingMode = mode;
+  loadingModelId = model.id;
   loadingPromise = (async () => {
     await disposeCurrentModel();
-    postInitialLoadProgress(mode, "Preparing model files");
+    postInitialLoadProgress(model.id, "Preparing model files");
 
-    if (definition.kind === "text") {
-      textGenerator = await loadTextGenerator(mode, definition);
-      assertChatTemplate(mode, textGenerator);
+    if (model.task === "text") {
+      textGenerator = await loadTextGenerator(model);
+      assertChatTemplate(model, textGenerator);
     } else {
-      const progressHandler = getProgressHandler(mode);
-      const [nextProcessor, nextVisionModel] = await Promise.all([
-        AutoProcessor.from_pretrained(definition.modelId, {
-          progress_callback: progressHandler,
-        }),
-        Qwen3_5ForConditionalGeneration.from_pretrained(definition.modelId, {
-          dtype: {
-            embed_tokens: "q4",
-            vision_encoder: "fp16",
-            decoder_model_merged: "q4",
-          },
-          device: "webgpu",
-          progress_callback: progressHandler,
-        }),
-      ]);
-
-      processor = nextProcessor;
-      visionModel = nextVisionModel;
+      await loadVisionModel(model);
     }
 
-    activeMode = mode;
+    activeModelId = model.id;
   })();
 
   try {
     await loadingPromise;
   } finally {
     loadingPromise = null;
-    loadingMode = null;
+    loadingModelId = null;
   }
 };
 
@@ -261,15 +250,14 @@ const toVisionConversation = (messages: ChatMessage[], hasImage: boolean) =>
     };
   });
 
-const generateTextReply = async (mode: ModelMode, messages: ChatMessage[]) => {
-  await ensureModelReady(mode);
-  const definition = MODEL_DEFINITIONS[mode];
+const generateTextReply = async (model: ModelDescriptor, messages: ChatMessage[]) => {
+  await ensureModelReady(model);
 
   if (!textGenerator) {
     throw new Error("The selected text model is not ready yet.");
   }
 
-  assertChatTemplate(mode, textGenerator);
+  assertChatTemplate(model, textGenerator);
 
   let streamedText = "";
   const streamer = new TextStreamer(textGenerator.tokenizer, {
@@ -277,7 +265,7 @@ const generateTextReply = async (mode: ModelMode, messages: ChatMessage[]) => {
     skip_special_tokens: true,
     callback_function: (text) => {
       streamedText += text;
-      postMessageToUi({ type: "STREAM_TOKEN", payload: { mode, text } });
+      postMessageToUi({ type: "STREAM_TOKEN", payload: { modelId: model.id, text } });
     },
   });
 
@@ -286,9 +274,9 @@ const generateTextReply = async (mode: ModelMode, messages: ChatMessage[]) => {
     return_full_text: false,
     streamer,
     tokenizer_encode_kwargs: {
-      max_length: definition.contextWindowTokens,
+      max_length: model.runtime.contextWindowTokens,
       truncation: true,
-      ...definition.chatTemplateOptions,
+      ...model.runtime.chatTemplateOptions,
     },
   });
 
@@ -297,11 +285,11 @@ const generateTextReply = async (mode: ModelMode, messages: ChatMessage[]) => {
 };
 
 const generateVisionReply = async (
-  mode: ModelMode,
+  model: ModelDescriptor,
   messages: ChatMessage[],
   image?: File | null,
 ) => {
-  await ensureModelReady(mode);
+  await ensureModelReady(model);
 
   if (!processor || !visionModel) {
     throw new Error("The selected vision model is not ready yet.");
@@ -319,7 +307,7 @@ const generateVisionReply = async (
     skip_special_tokens: true,
     callback_function: (text) => {
       streamedText += text;
-      postMessageToUi({ type: "STREAM_TOKEN", payload: { mode, text } });
+      postMessageToUi({ type: "STREAM_TOKEN", payload: { modelId: model.id, text } });
     },
   });
 
@@ -341,28 +329,32 @@ const generateVisionReply = async (
 self.addEventListener("message", async (event: MessageEvent<WorkerRequest>) => {
   switch (event.data.type) {
     case "LOAD_MODEL": {
-      const { mode } = event.data.payload;
+      const { model } = event.data.payload;
 
       try {
-        await ensureModelReady(mode);
-        postMessageToUi({ type: "MODEL_READY", payload: { mode } });
+        await ensureModelReady(model);
+        postMessageToUi({ type: "MODEL_READY", payload: { modelId: model.id } });
+        postMessageToUi({
+          type: "MODEL_LOAD_RESULT",
+          payload: { modelId: model.id, status: "verified" },
+        });
       } catch (error) {
-        postError(mode, error);
+        postError(model.id, error);
       }
       break;
     }
     case "GENERATE": {
-      const { mode, messages, image } = event.data.payload;
+      const { model, messages, image } = event.data.payload;
 
       try {
         const text =
-          MODEL_DEFINITIONS[mode].kind === "vision"
-            ? await generateVisionReply(mode, messages, image)
-            : await generateTextReply(mode, messages);
+          model.task === "vision"
+            ? await generateVisionReply(model, messages, image)
+            : await generateTextReply(model, messages);
 
-        postMessageToUi({ type: "GENERATION_DONE", payload: { mode, text } });
+        postMessageToUi({ type: "GENERATION_DONE", payload: { modelId: model.id, text } });
       } catch (error) {
-        postError(mode, error);
+        postError(model.id, error);
       }
       break;
     }

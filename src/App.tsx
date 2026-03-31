@@ -1,20 +1,60 @@
-import { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import {
+  FormEvent,
+  KeyboardEvent,
+  startTransition,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
-import { DEFAULT_MODEL_MODE, MODEL_DEFINITIONS, MODEL_OPTIONS } from "./models";
-import type { ChatMessage, ModelMode, WorkerRequest, WorkerResponse } from "./types";
+import ChatScreen from "./components/ChatScreen";
+import LandingScreen from "./components/LandingScreen";
+import ModelPickerDialog from "./components/ModelPickerDialog";
+import { getCompatibilityReport, shouldShowSearchModel } from "./compatibility";
+import { detectDeviceCapabilities } from "./device";
+import { searchHubModels, fetchHubModelDetails, enrichModelDescriptor } from "./hf";
+import {
+  CURATED_CATEGORIES,
+  CURATED_MODELS,
+  HOME_STARTER_MODELS,
+  getCuratedModelsForCategory,
+  searchCatalogModels,
+} from "./models";
+import {
+  loadLastModel,
+  loadModelVerdictCache,
+  loadPickerTab,
+  loadRecentModels,
+  loadShowExperimental,
+  pushRecentModel,
+  saveLastModel,
+  savePickerTab,
+  saveRecentModels,
+  saveShowExperimental,
+  upsertModelVerdict,
+} from "./storage";
+import type {
+  ChatMessage,
+  DeviceCapabilities,
+  LocalModelVerdictCache,
+  ModelDescriptor,
+  PickerTab,
+  SearchFilters,
+  WorkerRequest,
+  WorkerResponse,
+} from "./types";
 
+type Screen = "landing" | "chat";
 type AppState = "loading" | "ready";
-
 type ProgressState = {
-  mode: ModelMode;
+  modelId: string;
   file: string;
   progress: number | null;
   loaded: number | null;
   total: number | null;
 } | null;
-
 type DraftAttachment = {
   file: File;
   name: string;
@@ -25,21 +65,12 @@ type DraftAttachment = {
 const THINK_OPEN_TAG = "<think>";
 const THINK_CLOSE_TAG = "</think>";
 
-const formatBytes = (value: number | null) => {
-  if (!value || Number.isNaN(value)) {
-    return null;
-  }
-
-  const units = ["B", "KB", "MB", "GB"];
-  let size = value;
-  let unitIndex = 0;
-
-  while (size >= 1024 && unitIndex < units.length - 1) {
-    size /= 1024;
-    unitIndex += 1;
-  }
-
-  return `${size.toFixed(size >= 100 ? 0 : 1)} ${units[unitIndex]}`;
+const DEFAULT_DEVICE_CAPABILITIES: DeviceCapabilities = {
+  hasWebGpu: false,
+  supportsFp16: false,
+  tier: "desktop",
+  browserLabel: "Your browser",
+  userAgent: "",
 };
 
 const createMessage = (
@@ -97,64 +128,119 @@ const applyAssistantContent = (message: ChatMessage, rawContent: string): ChatMe
   };
 };
 
+const uniqueModelsById = (models: ModelDescriptor[]) =>
+  [...new Map(models.map((model) => [model.id, model])).values()];
+
 function App() {
   const workerRef = useRef<Worker | null>(null);
+  const selectedModelRef = useRef<ModelDescriptor | null>(null);
   const chatLogRef = useRef<HTMLElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const selectedModeRef = useRef<ModelMode>(DEFAULT_MODEL_MODE);
-  const [workerVersion, setWorkerVersion] = useState(0);
-  const [workerReady, setWorkerReady] = useState(false);
-  const [selectedMode, setSelectedMode] = useState<ModelMode>(DEFAULT_MODEL_MODE);
+  const [screen, setScreen] = useState<Screen>("landing");
   const [appState, setAppState] = useState<AppState>("loading");
+  const [deviceCapabilities, setDeviceCapabilities] = useState<DeviceCapabilities>(
+    DEFAULT_DEVICE_CAPABILITIES,
+  );
+  const [workerReady, setWorkerReady] = useState(false);
+  const [selectedModel, setSelectedModel] = useState<ModelDescriptor | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [draftAttachment, setDraftAttachment] = useState<DraftAttachment | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState<ProgressState>(null);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerTab, setPickerTab] = useState<PickerTab>(loadPickerTab());
+  const [pendingModel, setPendingModel] = useState<ModelDescriptor | null>(null);
+  const [loadingModelId, setLoadingModelId] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<ModelDescriptor[]>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [recentModels, setRecentModels] = useState<ModelDescriptor[]>(loadRecentModels());
+  const [localVerdicts, setLocalVerdicts] = useState<LocalModelVerdictCache>(loadModelVerdictCache());
+  const [searchFilters, setSearchFilters] = useState<SearchFilters>({
+    mobileSafe: deviceCapabilities.tier === "mobile",
+    verifiedOnly: false,
+    showExperimental: loadShowExperimental(),
+  });
 
-  const selectedModel = MODEL_DEFINITIONS[selectedMode];
-  const isVisionMode = selectedModel.kind === "vision";
-  const isWebGpuSupported =
-    typeof navigator !== "undefined" &&
-    "gpu" in navigator &&
-    /(chrome|edg)/i.test(navigator.userAgent);
+  const deferredSearchQuery = useDeferredValue(searchQuery);
 
   useEffect(() => {
-    selectedModeRef.current = selectedMode;
-  }, [selectedMode]);
+    detectDeviceCapabilities()
+      .then((capabilities) => {
+        setDeviceCapabilities(capabilities);
+        setSearchFilters((current) => ({
+          ...current,
+          mobileSafe: current.mobileSafe || capabilities.tier === "mobile",
+        }));
+      })
+      .catch(() => {
+        setDeviceCapabilities(DEFAULT_DEVICE_CAPABILITIES);
+      });
+  }, []);
 
   useEffect(() => {
-    if (!isWebGpuSupported) {
+    if (!deviceCapabilities.hasWebGpu) {
       return;
     }
 
-    const worker = new Worker(new URL("./model.worker.ts", import.meta.url), {
-      type: "module",
-    });
+    const worker = new Worker(new URL("./model.worker.ts", import.meta.url), { type: "module" });
 
     const handleWorkerMessage = (event: MessageEvent<WorkerResponse>) => {
+      const currentModel = selectedModelRef.current;
+      if (!currentModel) {
+        return;
+      }
+
       switch (event.data.type) {
         case "LOAD_PROGRESS": {
-          if (event.data.payload.mode !== selectedModeRef.current) {
+          if (event.data.payload.modelId !== currentModel.id) {
             return;
           }
           setProgress(event.data.payload);
           break;
         }
         case "MODEL_READY": {
-          if (event.data.payload.mode !== selectedModeRef.current) {
+          if (event.data.payload.modelId !== currentModel.id) {
             return;
           }
           setAppState("ready");
           setError(null);
           setProgress(null);
+          setLoadingModelId(null);
+          break;
+        }
+        case "MODEL_LOAD_RESULT": {
+          if (event.data.payload.modelId !== currentModel.id) {
+            return;
+          }
+
+          if (event.data.payload.status === "verified") {
+            const nextCache = upsertModelVerdict(currentModel.id, {
+              status: "verified",
+              lastLoadedAt: new Date().toISOString(),
+            });
+            setLocalVerdicts(nextCache);
+
+            const nextRecentModels = pushRecentModel(currentModel);
+            setRecentModels(nextRecentModels);
+            saveLastModel(currentModel);
+          } else {
+            const nextCache = upsertModelVerdict(currentModel.id, {
+              status: "failed_on_device",
+              lastLoadedAt: new Date().toISOString(),
+            });
+            setLocalVerdicts(nextCache);
+          }
           break;
         }
         case "STREAM_TOKEN": {
-          if (event.data.payload.mode !== selectedModeRef.current) {
+          if (event.data.payload.modelId !== currentModel.id) {
             return;
           }
+
           const { text } = event.data.payload;
           setMessages((current) => {
             const next = [...current];
@@ -165,17 +251,16 @@ function App() {
             }
 
             const nextRawContent = `${last.rawContent ?? last.content}${text}`;
-            next[next.length - 1] = {
-              ...applyAssistantContent(last, nextRawContent),
-            };
+            next[next.length - 1] = applyAssistantContent(last, nextRawContent);
             return next;
           });
           break;
         }
         case "GENERATION_DONE": {
-          if (event.data.payload.mode !== selectedModeRef.current) {
+          if (event.data.payload.modelId !== currentModel.id) {
             return;
           }
+
           const { text } = event.data.payload;
           setMessages((current) => {
             const next = [...current];
@@ -192,9 +277,15 @@ function App() {
           break;
         }
         case "ERROR": {
-          if (event.data.payload.mode !== selectedModeRef.current) {
+          if (event.data.payload.modelId !== currentModel.id) {
             return;
           }
+
+          const nextCache = upsertModelVerdict(currentModel.id, {
+            status: "failed_on_device",
+            lastLoadedAt: new Date().toISOString(),
+          });
+          setLocalVerdicts(nextCache);
           setMessages((current) => {
             const last = current.at(-1);
 
@@ -207,6 +298,7 @@ function App() {
           setError(event.data.payload.message);
           setAppState("loading");
           setIsGenerating(false);
+          setLoadingModelId(null);
           break;
         }
       }
@@ -222,10 +314,14 @@ function App() {
       workerRef.current = null;
       setWorkerReady(false);
     };
-  }, [isWebGpuSupported, workerVersion]);
+  }, [deviceCapabilities.hasWebGpu]);
 
   useEffect(() => {
-    if (!workerReady) {
+    selectedModelRef.current = selectedModel;
+  }, [selectedModel]);
+
+  useEffect(() => {
+    if (!workerReady || !selectedModel) {
       return;
     }
 
@@ -235,9 +331,9 @@ function App() {
 
     workerRef.current?.postMessage({
       type: "LOAD_MODEL",
-      payload: { mode: selectedMode },
+      payload: { model: selectedModel },
     } satisfies WorkerRequest);
-  }, [selectedMode, workerReady]);
+  }, [selectedModel, workerReady]);
 
   useEffect(() => {
     const chatLog = chatLogRef.current;
@@ -248,40 +344,154 @@ function App() {
     chatLog.scrollTop = chatLog.scrollHeight;
   }, [messages, progress]);
 
-  const progressLabel = useMemo(() => {
-    if (!progress) {
-      return null;
+  useEffect(() => {
+    if (!pickerOpen || pickerTab !== "search" || !deferredSearchQuery.trim()) {
+      setSearchResults([]);
+      setSearchError(null);
+      setSearchLoading(false);
+      return;
     }
 
-    const loaded = formatBytes(progress.loaded);
-    const total = formatBytes(progress.total);
+    let cancelled = false;
+    const catalogMatches = searchCatalogModels(deferredSearchQuery);
 
-    if (loaded && total) {
-      return `${loaded} / ${total}`;
+    setSearchLoading(true);
+    setSearchError(null);
+
+    searchHubModels(deferredSearchQuery, searchFilters, deviceCapabilities)
+      .then((models) => {
+        if (cancelled) {
+          return;
+        }
+
+        const compatibleModels = uniqueModelsById([...catalogMatches, ...models])
+          .map((model) => ({
+            ...model,
+            compatibility: getCompatibilityReport(model, deviceCapabilities, localVerdicts),
+          }))
+          .filter((model) =>
+            shouldShowSearchModel(model, searchFilters, deviceCapabilities, localVerdicts),
+          );
+
+        startTransition(() => setSearchResults(compatibleModels));
+      })
+      .catch((searchIssue) => {
+        if (cancelled) {
+          return;
+        }
+
+        const fallbackMatches = catalogMatches
+          .map((model) => ({
+            ...model,
+            compatibility: getCompatibilityReport(model, deviceCapabilities, localVerdicts),
+          }))
+          .filter((model) =>
+            shouldShowSearchModel(model, searchFilters, deviceCapabilities, localVerdicts),
+          );
+
+        if (fallbackMatches.length > 0) {
+          startTransition(() => setSearchResults(fallbackMatches));
+          setSearchError(null);
+          return;
+        }
+
+        setSearchError(
+          searchIssue instanceof Error
+            ? searchIssue.message
+            : "Unable to search compatible models right now.",
+        );
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setSearchLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    deferredSearchQuery,
+    deviceCapabilities,
+    localVerdicts,
+    pickerOpen,
+    pickerTab,
+    searchFilters,
+  ]);
+
+  const decorateModel = (model: ModelDescriptor) => ({
+    ...model,
+    compatibility: getCompatibilityReport(model, deviceCapabilities, localVerdicts),
+  });
+
+  const sortedRecentModels = useMemo(() => {
+    return [...recentModels].sort((left, right) => {
+      const leftVerdict = localVerdicts[left.id];
+      const rightVerdict = localVerdicts[right.id];
+      const leftWeight = leftVerdict?.status === "verified" ? 0 : 1;
+      const rightWeight = rightVerdict?.status === "verified" ? 0 : 1;
+
+      if (leftWeight !== rightWeight) {
+        return leftWeight - rightWeight;
+      }
+
+      const leftTime = leftVerdict ? Date.parse(leftVerdict.lastLoadedAt) : 0;
+      const rightTime = rightVerdict ? Date.parse(rightVerdict.lastLoadedAt) : 0;
+      return rightTime - leftTime;
+    });
+  }, [localVerdicts, recentModels]);
+
+  const curatedSections = useMemo(
+    () =>
+      CURATED_CATEGORIES.map((category) => ({
+        category,
+        models: getCuratedModelsForCategory(category.key).map((model) => ({
+          model: decorateModel(model),
+          compatibility: getCompatibilityReport(model, deviceCapabilities, localVerdicts),
+        })),
+      })),
+    [deviceCapabilities, localVerdicts],
+  );
+
+  const starterModels = useMemo(
+    () =>
+      HOME_STARTER_MODELS.map((model) => ({
+        model: decorateModel(model),
+        compatibility: getCompatibilityReport(model, deviceCapabilities, localVerdicts),
+      })),
+    [deviceCapabilities, localVerdicts],
+  );
+
+  const recentModelsWithCompatibility = useMemo(
+    () =>
+      sortedRecentModels.map((model) => ({
+        model: decorateModel(model),
+        compatibility: getCompatibilityReport(model, deviceCapabilities, localVerdicts),
+      })),
+    [deviceCapabilities, localVerdicts, sortedRecentModels],
+  );
+
+  const recommendedModel = useMemo(() => {
+    const lastModel = loadLastModel();
+    if (lastModel) {
+      const decoratedLastModel = decorateModel(lastModel);
+      if (decoratedLastModel.compatibility?.canLoad) {
+        return decoratedLastModel;
+      }
     }
 
-    if (typeof progress.progress === "number") {
-      return `${progress.progress.toFixed(1)}%`;
-    }
+    const preferredCategory = deviceCapabilities.tier === "mobile" ? "mobile_safe" : "balanced";
+    const fallback = CURATED_MODELS.find(
+      (model) => model.category === preferredCategory && model.task === "text",
+    );
 
-    return "Downloading";
-  }, [progress]);
+    return fallback ? decorateModel(fallback) : null;
+  }, [deviceCapabilities, localVerdicts]);
 
-  const statusText = useMemo(() => {
-    if (error) {
-      return error;
-    }
-
-    if (appState === "ready") {
-      return `${selectedModel.modelName} is ready in your browser`;
-    }
-
-    if (progressLabel) {
-      return `Downloading ${selectedModel.modelName} into your browser cache • ${progressLabel}`;
-    }
-
-    return `Preparing ${selectedModel.modelName} in your browser cache`;
-  }, [appState, error, progressLabel, selectedModel.modelName]);
+  const selectedModelWithCompatibility = useMemo(
+    () => (selectedModel ? decorateModel(selectedModel) : null),
+    [deviceCapabilities, localVerdicts, selectedModel],
+  );
 
   const progressWidth =
     appState === "ready" ? "100%" : `${Math.max(progress?.progress ?? 6, 6)}%`;
@@ -291,16 +501,29 @@ function App() {
       ? "panel-progress panel-progress-ready"
       : "panel-progress panel-progress-loading";
 
-  const statusBadgeLabel = error
-    ? "Issue"
-    : appState === "ready"
-      ? "Ready"
-      : "Loading";
-  const statusBadgeClass = error
-    ? "error"
-    : appState === "ready"
-      ? "ready"
-      : "loading";
+  const openPicker = (tab: PickerTab) => {
+    setPickerTab(tab);
+    savePickerTab(tab);
+    setPickerOpen(true);
+  };
+
+  const closePicker = () => setPickerOpen(false);
+
+  const toggleSearchFilter = (filter: keyof SearchFilters) => {
+    setSearchFilters((current) => {
+      const next = {
+        ...current,
+        [filter]: !current[filter],
+      };
+      saveShowExperimental(next.showExperimental);
+      return next;
+    });
+  };
+
+  const changePickerTab = (tab: PickerTab) => {
+    setPickerTab(tab);
+    savePickerTab(tab);
+  };
 
   const resetChat = () => {
     setMessages([]);
@@ -313,34 +536,73 @@ function App() {
     workerRef.current?.postMessage({ type: "RESET_CHAT" } satisfies WorkerRequest);
   };
 
-  const handleModelChange = (mode: ModelMode) => {
-    if (mode === selectedMode) {
+  const resolveSelectedModel = async (model: ModelDescriptor) => {
+    const baseModel = model.source === "search" ? enrichModelDescriptor(model, await fetchHubModelDetails(model.id)) : model;
+    const resolvedModel = decorateModel(baseModel);
+
+    if (!resolvedModel.compatibility?.canLoad) {
+      throw new Error(resolvedModel.compatibility?.reason ?? "This model is not loadable here.");
+    }
+
+    return resolvedModel;
+  };
+
+  const activateModel = async (model: ModelDescriptor) => {
+    setLoadingModelId(model.id);
+    setError(null);
+
+    try {
+      const resolvedModel = await resolveSelectedModel(model);
+      setSelectedModel(resolvedModel);
+      setScreen("chat");
+      setPickerOpen(false);
+      setPendingModel(null);
+      setAppState("loading");
+      setProgress(null);
+      setMessages([]);
+      setInput("");
+      setDraftAttachment(null);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+    } catch (selectionIssue) {
+      setLoadingModelId(null);
+      setError(
+        selectionIssue instanceof Error
+          ? selectionIssue.message
+          : "Unable to prepare this model for loading.",
+      );
+    }
+  };
+
+  const requestModelLoad = async (model: ModelDescriptor) => {
+    if (isGenerating) {
       return;
     }
 
-    setWorkerVersion((current) => current + 1);
-    setSelectedMode(mode);
-    setAppState("loading");
-    setMessages([]);
-    setInput("");
-    setDraftAttachment(null);
-    setError(null);
-    setProgress(null);
-    if (fileInputRef.current) {
-      fileInputRef.current.value = "";
+    if (screen === "chat" && selectedModel && selectedModel.id !== model.id && messages.length > 0) {
+      setPendingModel(model);
+      return;
     }
+
+    await activateModel(model);
   };
 
-  const removeAttachment = () => {
-    setDraftAttachment(null);
-    if (fileInputRef.current) {
-      fileInputRef.current.value = "";
+  const handleGetStarted = async () => {
+    if (!recommendedModel?.compatibility?.canLoad) {
+      return;
     }
+
+    await activateModel(recommendedModel);
   };
 
   const submitMessage = () => {
+    if (!selectedModelWithCompatibility) {
+      return;
+    }
+
     const trimmed = input.trim();
-    const canSendImageOnly = isVisionMode && draftAttachment;
+    const canSendImageOnly = selectedModelWithCompatibility.task === "vision" && draftAttachment;
 
     if ((!trimmed && !canSendImageOnly) || appState !== "ready" || isGenerating) {
       return;
@@ -365,6 +627,7 @@ function App() {
     setDraftAttachment(null);
     setIsGenerating(true);
     setError(null);
+
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
@@ -372,7 +635,7 @@ function App() {
     workerRef.current?.postMessage({
       type: "GENERATE",
       payload: {
-        mode: selectedMode,
+        model: selectedModelWithCompatibility,
         messages: nextMessages,
         image: draftAttachment?.file ?? null,
       },
@@ -406,193 +669,131 @@ function App() {
     });
   };
 
-  if (!isWebGpuSupported) {
+  const removeAttachment = () => {
+    setDraftAttachment(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+  };
+
+  useEffect(() => {
+    saveRecentModels(recentModels);
+  }, [recentModels]);
+
+  useEffect(() => {
+    savePickerTab(pickerTab);
+  }, [pickerTab]);
+
+  if (screen === "landing" || !selectedModelWithCompatibility) {
     return (
-      <main className="shell shell-single">
-        <section className="panel unsupported-panel">
-          <p className="eyebrow">Browser LLM Chat</p>
-          <h1>WebGPU is required.</h1>
-          <p className="lede">
-            Open this app in recent Chrome or Edge on desktop. Model files are downloaded into the
-            browser, so WebGPU support is required here.
-          </p>
-        </section>
-      </main>
+      <>
+        <LandingScreen
+          recommendedModel={recommendedModel}
+          starterModels={starterModels}
+          loadingModelId={loadingModelId}
+          getStartedDisabled={!recommendedModel?.compatibility?.canLoad}
+          globalMessage={error}
+          onGetStarted={handleGetStarted}
+          onOpenPicker={openPicker}
+          onSelectModel={requestModelLoad}
+        />
+
+        <ModelPickerDialog
+          open={pickerOpen}
+          activeTab={pickerTab}
+          curatedSections={curatedSections}
+          recentModels={recentModelsWithCompatibility}
+          searchQuery={searchQuery}
+          searchFilters={searchFilters}
+          searchResults={searchResults.map((model) => ({
+            model,
+            compatibility: model.compatibility!,
+          }))}
+          searchLoading={searchLoading}
+          searchError={searchError}
+          loadingModelId={loadingModelId}
+          onClose={closePicker}
+          onTabChange={changePickerTab}
+          onSearchQueryChange={setSearchQuery}
+          onToggleFilter={toggleSearchFilter}
+          onLoadModel={requestModelLoad}
+        />
+      </>
     );
   }
 
   return (
-    <main className="shell">
-      <section className="panel app-panel">
-        <div className={progressClassName} aria-hidden="true">
-          <div
-            className="panel-progress-fill"
-            style={{
-              width: progressWidth,
-            }}
-          />
-        </div>
+    <>
+      <ChatScreen
+        selectedModel={selectedModelWithCompatibility}
+        appState={appState}
+        messages={messages}
+        input={input}
+        progress={progress}
+        progressWidth={progressWidth}
+        progressClassName={progressClassName}
+        error={error}
+        isGenerating={isGenerating}
+        draftAttachment={draftAttachment}
+        chatLogRef={chatLogRef}
+        fileInputRef={fileInputRef}
+        onChangeModel={() => openPicker("curated")}
+        onResetChat={resetChat}
+        onInputChange={setInput}
+        onSubmit={handleSubmit}
+        onComposerKeyDown={handleComposerKeyDown}
+        onFileChange={handleFileChange}
+        onRemoveAttachment={removeAttachment}
+      />
 
-        <header className="topbar topbar-chat">
-          <div className="topbar-copy">
-            <p className="eyebrow">Browser LLM Chat</p>
-            <h1>Local LLM in your browser</h1>
-            <p className="lede lede-compact">
-              No backend. Model files stay in your browser cache after the first download.
+      <ModelPickerDialog
+        open={pickerOpen}
+        activeTab={pickerTab}
+        curatedSections={curatedSections}
+        recentModels={recentModelsWithCompatibility}
+        searchQuery={searchQuery}
+        searchFilters={searchFilters}
+        searchResults={searchResults.map((model) => ({
+          model,
+          compatibility: model.compatibility!,
+        }))}
+        searchLoading={searchLoading}
+        searchError={searchError}
+        loadingModelId={loadingModelId}
+        onClose={closePicker}
+        onTabChange={changePickerTab}
+        onSearchQueryChange={setSearchQuery}
+        onToggleFilter={toggleSearchFilter}
+        onLoadModel={requestModelLoad}
+      />
+
+      {pendingModel && (
+        <div className="dialog-backdrop" role="presentation">
+          <section className="confirm-shell" role="dialog" aria-modal="true" aria-label="Change model">
+            <p className="section-label">Change Model</p>
+            <h2>Start a new chat with this model?</h2>
+            <p className="confirm-copy">
+              Switching models clears the current chat so the new session starts cleanly with{" "}
+              <strong>{pendingModel.label}</strong>.
             </p>
-          </div>
-          <div className="topbar-actions">
-            <span className={`status-badge status-${statusBadgeClass}`}>{statusBadgeLabel}</span>
-            <label className="model-switcher">
-              <span className="sr-only">Select model</span>
-              <select
-                value={selectedMode}
-                onChange={(event) => handleModelChange(event.target.value as ModelMode)}
-                disabled={isGenerating}
-              >
-                {MODEL_OPTIONS.map((option) => (
-                  <option key={option.key} value={option.key}>
-                    {option.label} · {option.modelName} ({option.paramsLabel})
-                  </option>
-                ))}
-              </select>
-            </label>
-            <button
-              className="secondary-button"
-              onClick={resetChat}
-              type="button"
-              disabled={isGenerating || messages.length === 0}
-            >
-              Reset
-            </button>
-          </div>
-        </header>
-
-        <section className="chat-log" aria-label="Chat messages" ref={chatLogRef}>
-          {messages.length === 0 ? (
-            <div className="empty-state">
-              <p className="empty-title">Start chatting.</p>
-              <p className="empty-copy">
-                {appState === "ready"
-                  ? "The selected model is ready. Ask a question to begin."
-                  : "The selected model is still loading. Send unlocks automatically once it is ready."}
-              </p>
-            </div>
-          ) : (
-            messages.map((message) => (
-              <article key={message.id} className={`message message-${message.role}`}>
-                {message.attachment && (
-                  <div className="message-attachment">
-                    <span className="attachment-chip">
-                      Image attached: {message.attachment.name}
-                    </span>
-                  </div>
-                )}
-                {message.role === "assistant" ? (
-                  <div className="markdown-body">
-                    {message.reasoning && (
-                      <details className="reasoning-panel">
-                        <summary>
-                          {message.reasoningState === "streaming" ? "Thinking" : "View thinking"}
-                        </summary>
-                        <div className="reasoning-body">
-                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                            {message.reasoning}
-                          </ReactMarkdown>
-                        </div>
-                      </details>
-                    )}
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                      {message.content ||
-                        (message.reasoningState === "streaming"
-                          ? ""
-                          : isGenerating
-                            ? "Thinking..."
-                            : "")}
-                    </ReactMarkdown>
-                    {message.reasoningState === "streaming" && !message.content && (
-                      <p className="thinking-indicator">Thinking…</p>
-                    )}
-                  </div>
-                ) : (
-                  <p className="message-content">{message.content}</p>
-                )}
-              </article>
-            ))
-          )}
-        </section>
-
-        <form className="composer" onSubmit={handleSubmit}>
-          {isVisionMode && (
-            <div className="composer-attachments">
-              <input
-                ref={fileInputRef}
-                className="sr-only"
-                id="vision-upload"
-                type="file"
-                accept="image/*"
-                onChange={handleFileChange}
-                disabled={appState !== "ready" || isGenerating}
-              />
-              <button
-                className="attach-button"
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={appState !== "ready" || isGenerating}
-              >
-                Attach image
+            <div className="confirm-actions">
+              <button className="secondary-button" type="button" onClick={() => setPendingModel(null)}>
+                Cancel
               </button>
-              {draftAttachment && (
-                <button
-                  className="attachment-chip attachment-chip-action"
-                  type="button"
-                  onClick={removeAttachment}
-                >
-                  {draftAttachment.name} · {formatBytes(draftAttachment.size) ?? "image"} ×
-                </button>
-              )}
+              <button
+                className="primary-button"
+                type="button"
+                onClick={() => {
+                  void activateModel(pendingModel);
+                }}
+              >
+                Start New Chat
+              </button>
             </div>
-          )}
-          <label className="sr-only" htmlFor="chat-input">
-            Ask the model something
-          </label>
-          <textarea
-            id="chat-input"
-            className="composer-input"
-            value={input}
-            onChange={(event) => setInput(event.target.value)}
-            onKeyDown={handleComposerKeyDown}
-            placeholder={
-              appState === "ready"
-                ? isVisionMode
-                  ? "Type a prompt, or attach an image and ask about it..."
-                  : "Message the model..."
-                : "Model is downloading into your browser..."
-            }
-            rows={2}
-            disabled={appState !== "ready" || isGenerating}
-          />
-          <div className="composer-footer">
-            <p className={`hint ${error ? "error-text" : ""}`}>
-              {appState === "ready"
-                ? "Press Enter to send. Use Shift+Enter for a new line."
-                : "Send unlocks automatically once the model is ready."}
-            </p>
-            <button
-              className="primary-button"
-              type="submit"
-              disabled={
-                appState !== "ready" ||
-                isGenerating ||
-                (input.trim().length === 0 && !draftAttachment)
-              }
-            >
-              {isGenerating ? "Generating..." : appState === "ready" ? "Send" : "Loading..."}
-            </button>
-          </div>
-        </form>
-      </section>
-    </main>
+          </section>
+        </div>
+      )}
+    </>
   );
 }
 
