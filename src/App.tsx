@@ -23,12 +23,16 @@ import {
   searchCatalogModels,
 } from "./models";
 import {
+  loadActiveChatThreadId,
+  loadChatThreads,
   loadLastModel,
   loadModelVerdictCache,
   loadPickerTab,
   loadRecentModels,
   loadShowExperimental,
   pushRecentModel,
+  saveActiveChatThreadId,
+  saveChatThreads,
   saveLastModel,
   savePickerTab,
   saveRecentModels,
@@ -37,6 +41,7 @@ import {
 } from "./storage";
 import type {
   ChatMessage,
+  ChatThread,
   DeviceCapabilities,
   LocalModelVerdictCache,
   ModelDescriptor,
@@ -131,19 +136,74 @@ const applyAssistantContent = (message: ChatMessage, rawContent: string): ChatMe
 const uniqueModelsById = (models: ModelDescriptor[]) =>
   [...new Map(models.map((model) => [model.id, model])).values()];
 
+const sortThreadsByUpdatedAt = (threads: ChatThread[]) =>
+  [...threads].sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt));
+
+const stripModelCompatibility = (model: ModelDescriptor): ModelDescriptor => {
+  const { compatibility: _compatibility, ...rest } = model;
+  return rest;
+};
+
+const stripMessageRuntime = (message: ChatMessage): ChatMessage => {
+  const { rawContent: _rawContent, ...rest } = message;
+  return rest;
+};
+
+const toStoredMessages = (messages: ChatMessage[]) => messages.map(stripMessageRuntime);
+
+const buildThreadTitle = (messages: ChatMessage[]) => {
+  const firstUserText = messages.find(
+    (message) => message.role === "user" && message.content.trim().length > 0,
+  )?.content;
+
+  if (firstUserText) {
+    const normalized = firstUserText.replace(/\s+/g, " ").trim();
+    return normalized.length > 42 ? `${normalized.slice(0, 42).trimEnd()}…` : normalized;
+  }
+
+  const firstAttachment = messages.find((message) => message.attachment)?.attachment;
+  if (firstAttachment) {
+    return `Image chat · ${firstAttachment.name}`;
+  }
+
+  return "New chat";
+};
+
+const areMessagesEqual = (left: ChatMessage[], right: ChatMessage[]) =>
+  JSON.stringify(left) === JSON.stringify(right);
+
+const loadInitialThreadState = () => {
+  const threads = sortThreadsByUpdatedAt(loadChatThreads());
+  const savedActiveThreadId = loadActiveChatThreadId();
+  const activeThread =
+    threads.find((thread) => thread.id === savedActiveThreadId) ?? threads[0] ?? null;
+
+  return {
+    threads,
+    activeThreadId: activeThread?.id ?? null,
+    activeThread,
+    screen: threads.length > 0 ? ("chat" as const) : ("landing" as const),
+  };
+};
+
 function App() {
+  const initialThreadState = useMemo(loadInitialThreadState, []);
   const workerRef = useRef<Worker | null>(null);
   const selectedModelRef = useRef<ModelDescriptor | null>(null);
   const chatLogRef = useRef<HTMLElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const [screen, setScreen] = useState<Screen>("landing");
+  const [screen, setScreen] = useState<Screen>(initialThreadState.screen);
   const [appState, setAppState] = useState<AppState>("loading");
   const [deviceCapabilities, setDeviceCapabilities] = useState<DeviceCapabilities>(
     DEFAULT_DEVICE_CAPABILITIES,
   );
   const [workerReady, setWorkerReady] = useState(false);
-  const [selectedModel, setSelectedModel] = useState<ModelDescriptor | null>(null);
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [selectedModel, setSelectedModel] = useState<ModelDescriptor | null>(
+    initialThreadState.activeThread?.model ?? null,
+  );
+  const [messages, setMessages] = useState<ChatMessage[]>(
+    initialThreadState.activeThread?.messages ?? [],
+  );
   const [input, setInput] = useState("");
   const [draftAttachment, setDraftAttachment] = useState<DraftAttachment | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -159,6 +219,9 @@ function App() {
   const [searchError, setSearchError] = useState<string | null>(null);
   const [recentModels, setRecentModels] = useState<ModelDescriptor[]>(loadRecentModels());
   const [localVerdicts, setLocalVerdicts] = useState<LocalModelVerdictCache>(loadModelVerdictCache());
+  const [chatThreads, setChatThreads] = useState<ChatThread[]>(initialThreadState.threads);
+  const [activeThreadId, setActiveThreadId] = useState<string | null>(initialThreadState.activeThreadId);
+  const [chatStorageWarning, setChatStorageWarning] = useState<string | null>(null);
   const [searchFilters, setSearchFilters] = useState<SearchFilters>({
     mobileSafe: deviceCapabilities.tier === "mobile",
     verifiedOnly: false,
@@ -166,6 +229,10 @@ function App() {
   });
 
   const deferredSearchQuery = useDeferredValue(searchQuery);
+  const activeThread = useMemo(
+    () => chatThreads.find((thread) => thread.id === activeThreadId) ?? null,
+    [activeThreadId, chatThreads],
+  );
 
   useEffect(() => {
     detectDeviceCapabilities()
@@ -319,6 +386,45 @@ function App() {
   useEffect(() => {
     selectedModelRef.current = selectedModel;
   }, [selectedModel]);
+
+  useEffect(() => {
+    if (!activeThreadId || !selectedModel) {
+      return;
+    }
+
+    const storedModel = stripModelCompatibility(selectedModel);
+    const storedMessages = toStoredMessages(messages);
+
+    setChatThreads((current) => {
+      const existingThread = current.find((thread) => thread.id === activeThreadId);
+      if (!existingThread) {
+        return current;
+      }
+
+      const nextTitle = buildThreadTitle(storedMessages);
+      const hasModelChanged =
+        existingThread.model.id !== storedModel.id ||
+        existingThread.model.label !== storedModel.label;
+      const hasMessagesChanged = !areMessagesEqual(existingThread.messages, storedMessages);
+      const hasTitleChanged = existingThread.title !== nextTitle;
+
+      if (!hasModelChanged && !hasMessagesChanged && !hasTitleChanged) {
+        return current;
+      }
+
+      const updatedThread: ChatThread = {
+        ...existingThread,
+        title: nextTitle,
+        model: storedModel,
+        messages: storedMessages,
+        updatedAt: new Date().toISOString(),
+      };
+
+      return sortThreadsByUpdatedAt(
+        current.map((thread) => (thread.id === activeThreadId ? updatedThread : thread)),
+      );
+    });
+  }, [activeThreadId, messages, selectedModel]);
 
   useEffect(() => {
     if (!workerReady || !selectedModel) {
@@ -501,6 +607,24 @@ function App() {
       ? "panel-progress panel-progress-ready"
       : "panel-progress panel-progress-loading";
 
+  const defaultThreadModel = useMemo(() => {
+    if (recommendedModel) {
+      return recommendedModel;
+    }
+
+    if (selectedModelWithCompatibility) {
+      return selectedModelWithCompatibility;
+    }
+
+    const fallback = CURATED_MODELS.find((model) =>
+      deviceCapabilities.tier === "mobile"
+        ? model.category === "mobile_safe" && model.task === "text"
+        : model.category === "balanced" && model.task === "text",
+    );
+
+    return fallback ? decorateModel(fallback) : null;
+  }, [deviceCapabilities.tier, recommendedModel, selectedModelWithCompatibility]);
+
   const openPicker = (tab: PickerTab) => {
     setPickerTab(tab);
     savePickerTab(tab);
@@ -525,6 +649,118 @@ function App() {
     savePickerTab(tab);
   };
 
+  const createThreadRecord = (model: ModelDescriptor): ChatThread => {
+    const timestamp = new Date().toISOString();
+
+    return {
+      id: crypto.randomUUID(),
+      title: "New chat",
+      model: stripModelCompatibility(model),
+      messages: [],
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+  };
+
+  const openThread = (threadId: string) => {
+    if (isGenerating) {
+      return;
+    }
+
+    const thread = chatThreads.find((entry) => entry.id === threadId);
+    if (!thread) {
+      return;
+    }
+
+    const sameModel = selectedModel?.id === thread.model.id;
+    setActiveThreadId(thread.id);
+    setScreen("chat");
+    setPendingModel(null);
+    setPickerOpen(false);
+    setInput("");
+    setDraftAttachment(null);
+    setError(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+
+    setMessages(thread.messages);
+
+    if (!sameModel || !selectedModel) {
+      setSelectedModel(thread.model);
+      setAppState("loading");
+      setProgress(null);
+      setLoadingModelId(thread.model.id);
+      return;
+    }
+
+    setSelectedModel(selectedModel);
+  };
+
+  const createNewThread = async (preferredModel?: ModelDescriptor) => {
+    if (isGenerating) {
+      return;
+    }
+
+    const baseModel = preferredModel ?? defaultThreadModel;
+    if (!baseModel) {
+      return;
+    }
+
+    const thread = createThreadRecord(baseModel);
+    setChatThreads((current) => sortThreadsByUpdatedAt([thread, ...current]));
+    setActiveThreadId(thread.id);
+    setScreen("chat");
+    setMessages([]);
+    setInput("");
+    setDraftAttachment(null);
+    setError(null);
+    setPickerOpen(false);
+    setPendingModel(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+
+    if (selectedModel?.id === baseModel.id) {
+      setSelectedModel(selectedModel);
+      return;
+    }
+
+    setSelectedModel(baseModel);
+    setAppState("loading");
+    setProgress(null);
+    setLoadingModelId(baseModel.id);
+  };
+
+  const deleteThread = (threadId: string) => {
+    if (isGenerating) {
+      return;
+    }
+
+    const remainingThreads = chatThreads.filter((thread) => thread.id !== threadId);
+    setChatThreads(remainingThreads);
+
+    if (remainingThreads.length === 0) {
+      setActiveThreadId(null);
+      setSelectedModel(null);
+      setMessages([]);
+      setInput("");
+      setDraftAttachment(null);
+      setError(null);
+      setPickerOpen(false);
+      setPendingModel(null);
+      setScreen("landing");
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+      return;
+    }
+
+    if (threadId === activeThreadId) {
+      openThread(remainingThreads[0].id);
+    }
+  };
+
   const resetChat = () => {
     setMessages([]);
     setInput("");
@@ -537,7 +773,10 @@ function App() {
   };
 
   const resolveSelectedModel = async (model: ModelDescriptor) => {
-    const baseModel = model.source === "search" ? enrichModelDescriptor(model, await fetchHubModelDetails(model.id)) : model;
+    const baseModel =
+      model.source === "search"
+        ? enrichModelDescriptor(model, await fetchHubModelDetails(model.id))
+        : model;
     const resolvedModel = decorateModel(baseModel);
 
     if (!resolvedModel.compatibility?.canLoad) {
@@ -553,6 +792,22 @@ function App() {
 
     try {
       const resolvedModel = await resolveSelectedModel(model);
+      const shouldReuseActiveThread = screen === "chat" && activeThreadId && messages.length === 0;
+      const nextThread = shouldReuseActiveThread
+        ? {
+            ...(activeThread ?? createThreadRecord(resolvedModel)),
+            title: "New chat",
+            model: stripModelCompatibility(resolvedModel),
+            messages: [],
+            updatedAt: new Date().toISOString(),
+          }
+        : createThreadRecord(resolvedModel);
+
+      setChatThreads((current) => {
+        const withoutTarget = current.filter((thread) => thread.id !== nextThread.id);
+        return sortThreadsByUpdatedAt([nextThread, ...withoutTarget]);
+      });
+      setActiveThreadId(nextThread.id);
       setSelectedModel(resolvedModel);
       setScreen("chat");
       setPickerOpen(false);
@@ -684,6 +939,27 @@ function App() {
     savePickerTab(pickerTab);
   }, [pickerTab]);
 
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      const threadsResult = saveChatThreads(chatThreads);
+      const activeThreadResult = saveActiveChatThreadId(activeThreadId);
+
+      if (
+        (!threadsResult.ok && threadsResult.reason === "quota") ||
+        (!activeThreadResult.ok && activeThreadResult.reason === "quota")
+      ) {
+        setChatStorageWarning("Local storage is full. Delete some chats to keep saving new ones.");
+        return;
+      }
+
+      if (threadsResult.ok && activeThreadResult.ok) {
+        setChatStorageWarning(null);
+      }
+    }, 180);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [activeThreadId, chatThreads]);
+
   if (screen === "landing" || !selectedModelWithCompatibility) {
     return (
       <>
@@ -725,6 +1001,8 @@ function App() {
   return (
     <>
       <ChatScreen
+        threads={chatThreads}
+        activeThreadId={activeThreadId}
         selectedModel={selectedModelWithCompatibility}
         appState={appState}
         messages={messages}
@@ -735,8 +1013,14 @@ function App() {
         error={error}
         isGenerating={isGenerating}
         draftAttachment={draftAttachment}
+        storageWarning={chatStorageWarning}
         chatLogRef={chatLogRef}
         fileInputRef={fileInputRef}
+        onCreateThread={() => {
+          void createNewThread();
+        }}
+        onSelectThread={openThread}
+        onDeleteThread={deleteThread}
         onChangeModel={() => openPicker("curated")}
         onResetChat={resetChat}
         onInputChange={setInput}

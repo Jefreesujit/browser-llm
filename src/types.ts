@@ -14,6 +14,15 @@ export type ChatMessage = {
   };
 };
 
+export type ChatThread = {
+  id: string;
+  title: string;
+  model: ModelDescriptor;
+  messages: ChatMessage[];
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type ModelTask = "text" | "vision";
 export type ModelSource = "curated" | "search" | "recent";
 export type CompatibilityVerdict =
@@ -102,6 +111,11 @@ export type LocalModelVerdictEntry = {
 };
 
 export type LocalModelVerdictCache = Record<string, LocalModelVerdictEntry>;
+
+export type StorageWriteResult = {
+  ok: boolean;
+  reason?: "quota" | "unavailable";
+};
 
 export type WorkerRequest =
   | { type: "LOAD_MODEL"; payload: { model: ModelDescriptor } }

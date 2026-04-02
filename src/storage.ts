@@ -1,8 +1,10 @@
 import type {
+  ChatThread,
   LocalModelVerdictCache,
   LocalModelVerdictEntry,
   ModelDescriptor,
   PickerTab,
+  StorageWriteResult,
 } from "./types";
 
 const LAST_MODEL_KEY = "webllm:last-model";
@@ -10,6 +12,8 @@ const RECENT_MODELS_KEY = "webllm:recent-models";
 const PICKER_TAB_KEY = "webllm:picker-tab";
 const SHOW_EXPERIMENTAL_KEY = "webllm:show-experimental";
 const MODEL_VERDICT_CACHE_KEY = "webllm:model-verdict-cache";
+const CHAT_THREADS_KEY = "webllm:chat-threads";
+const ACTIVE_CHAT_THREAD_KEY = "webllm:active-chat-thread";
 
 const readJson = <T>(key: string, fallback: T) => {
   if (typeof window === "undefined") {
@@ -24,15 +28,29 @@ const readJson = <T>(key: string, fallback: T) => {
   }
 };
 
-const writeJson = (key: string, value: unknown) => {
+const writeJson = (key: string, value: unknown): StorageWriteResult => {
   if (typeof window === "undefined") {
-    return;
+    return { ok: false, reason: "unavailable" };
   }
 
   try {
     window.localStorage.setItem(key, JSON.stringify(value));
+    return { ok: true };
   } catch {
-    // Ignore storage quota and privacy-mode write failures.
+    return { ok: false, reason: "quota" };
+  }
+};
+
+const removeValue = (key: string): StorageWriteResult => {
+  if (typeof window === "undefined") {
+    return { ok: false, reason: "unavailable" };
+  }
+
+  try {
+    window.localStorage.removeItem(key);
+    return { ok: true };
+  } catch {
+    return { ok: false, reason: "unavailable" };
   }
 };
 
@@ -71,3 +89,13 @@ export const upsertModelVerdict = (modelId: string, entry: LocalModelVerdictEntr
   saveModelVerdictCache(next);
   return next;
 };
+
+export const loadChatThreads = () => readJson<ChatThread[]>(CHAT_THREADS_KEY, []);
+
+export const saveChatThreads = (threads: ChatThread[]) => writeJson(CHAT_THREADS_KEY, threads);
+
+export const loadActiveChatThreadId = () =>
+  readJson<string | null>(ACTIVE_CHAT_THREAD_KEY, null);
+
+export const saveActiveChatThreadId = (threadId: string | null) =>
+  threadId ? writeJson(ACTIVE_CHAT_THREAD_KEY, threadId) : removeValue(ACTIVE_CHAT_THREAD_KEY);

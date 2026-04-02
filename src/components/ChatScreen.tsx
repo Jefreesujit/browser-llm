@@ -2,8 +2,9 @@ import { FormEvent, KeyboardEvent, RefObject } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
+import ChatHistorySidebar from "./ChatHistorySidebar";
 import { formatBytes } from "../format";
-import type { ChatMessage, ModelDescriptor } from "../types";
+import type { ChatMessage, ChatThread, ModelDescriptor } from "../types";
 
 type AppState = "loading" | "ready";
 
@@ -55,7 +56,44 @@ const getModelFlags = (model: ModelDescriptor) => {
   return flags;
 };
 
+const getStarterPrompts = (model: ModelDescriptor) => {
+  if (model.task === "vision") {
+    return [
+      "Describe the image and summarize the key details.",
+      "Extract the main text and explain what it means.",
+      "What stands out in this image and why?",
+    ];
+  }
+
+  if (model.category === "coding") {
+    return [
+      "Write a small utility function and explain it.",
+      "Review this bug and suggest the fix.",
+      "Refactor this code for readability.",
+      "Explain how this code works step by step.",
+    ];
+  }
+
+  if (model.category === "reasoning") {
+    return [
+      "Compare two options and recommend one.",
+      "Break this problem into clear steps.",
+      "Give me the tradeoffs behind this decision.",
+      "Help me think through the risks here.",
+    ];
+  }
+
+  return [
+    "Summarize a topic clearly for me.",
+    "Help me draft a message or email.",
+    "Explain a concept in simple terms.",
+    "Give me a quick plan for this task.",
+  ];
+};
+
 type ChatScreenProps = {
+  threads: ChatThread[];
+  activeThreadId: string | null;
   selectedModel: ModelDescriptor;
   appState: AppState;
   messages: ChatMessage[];
@@ -66,8 +104,12 @@ type ChatScreenProps = {
   error: string | null;
   isGenerating: boolean;
   draftAttachment: DraftAttachment | null;
+  storageWarning?: string | null;
   chatLogRef: RefObject<HTMLElement | null>;
   fileInputRef: RefObject<HTMLInputElement | null>;
+  onCreateThread: () => void;
+  onSelectThread: (threadId: string) => void;
+  onDeleteThread: (threadId: string) => void;
   onChangeModel: () => void;
   onResetChat: () => void;
   onInputChange: (value: string) => void;
@@ -78,6 +120,8 @@ type ChatScreenProps = {
 };
 
 function ChatScreen({
+  threads,
+  activeThreadId,
   selectedModel,
   appState,
   messages,
@@ -88,8 +132,12 @@ function ChatScreen({
   error,
   isGenerating,
   draftAttachment,
+  storageWarning,
   chatLogRef,
   fileInputRef,
+  onCreateThread,
+  onSelectThread,
+  onDeleteThread,
   onChangeModel,
   onResetChat,
   onInputChange,
@@ -99,6 +147,7 @@ function ChatScreen({
   onRemoveAttachment,
 }: ChatScreenProps) {
   const isVisionMode = selectedModel.task === "vision";
+  const starterPrompts = getStarterPrompts(selectedModel);
   const modelStatus = error
     ? { label: "Failed", className: "model-switcher-status model-switcher-status-error" }
     : appState === "ready"
@@ -110,201 +159,228 @@ function ChatScreen({
 
   return (
     <main className="shell">
-      <section className="panel app-panel">
+      <section className="panel app-panel chat-workspace-panel">
         <div className={progressClassName} aria-hidden="true">
           <div className="panel-progress-fill" style={{ width: progressWidth }} />
         </div>
 
-        <header className="chat-toolbar">
-          <div className="chat-toolbar-copy">
-            <p className="eyebrow">Browser LLM Chat</p>
-            <div className="chat-toolbar-heading">
-              <h1>Private LLM chat in your browser</h1>
-            </div>
-          </div>
-          <div className="chat-toolbar-actions">
-            <div className="model-switcher-wrap">
-              <button
-                className="secondary-button model-switcher"
-                type="button"
-                onClick={onChangeModel}
-                disabled={isGenerating}
-              >
-                <span className={modelStatus.className}>
-                  <span className="model-switcher-dot" aria-hidden="true" />
-                  {modelStatus.label}
-                </span>
-                <span className="model-switcher-name">{selectedModel.label}</span>
-                <span className="model-switcher-caret" aria-hidden="true">
-                  Change
-                </span>
-              </button>
-              <div className="model-switcher-popover" role="note" aria-label="Model details">
-                <p className="model-switcher-popover-title">{selectedModel.label}</p>
-                <p className="model-switcher-popover-copy">{selectedModel.summary}</p>
-                <dl className="model-switcher-stats">
-                  <div>
-                    <dt>Parameters</dt>
-                    <dd>{selectedModel.paramsLabel}</dd>
+        <div className="chat-workspace-content">
+          <ChatHistorySidebar
+            threads={threads}
+            activeThreadId={activeThreadId}
+            disabled={isGenerating}
+            storageWarning={storageWarning}
+            onCreateThread={onCreateThread}
+            onSelectThread={onSelectThread}
+            onDeleteThread={onDeleteThread}
+          />
+
+          <div className="chat-main">
+            <header className="chat-toolbar">
+              <div className="chat-toolbar-main">
+                <div className="chat-toolbar-copy">
+                  <h1>Browser LLM Chat</h1>
+                </div>
+                <div className="chat-toolbar-actions">
+                  <div className="model-switcher-wrap">
+                    <button
+                      className="secondary-button model-switcher"
+                      type="button"
+                      onClick={onChangeModel}
+                      disabled={isGenerating}
+                    >
+                      <span className={modelStatus.className}>
+                        <span className="model-switcher-dot" aria-hidden="true" />
+                        {modelStatus.label}
+                      </span>
+                      <span className="model-switcher-name">{selectedModel.label}</span>
+                      <span className="model-switcher-caret" aria-hidden="true">
+                        ▾
+                      </span>
+                    </button>
+                    <div className="model-switcher-popover" role="note" aria-label="Model details">
+                      <p className="model-switcher-popover-title">{selectedModel.label}</p>
+                      <p className="model-switcher-popover-copy">{selectedModel.summary}</p>
+                      <dl className="model-switcher-stats">
+                        <div>
+                          <dt>Parameters</dt>
+                          <dd>{selectedModel.paramsLabel}</dd>
+                        </div>
+                        <div>
+                          <dt>Context</dt>
+                          <dd>{formatContextWindow(selectedModel.runtime.contextWindowTokens)}</dd>
+                        </div>
+                        <div>
+                          <dt>Publisher</dt>
+                          <dd>{selectedModel.publisher}</dd>
+                        </div>
+                        <div>
+                          <dt>Mode</dt>
+                          <dd>{selectedModel.task === "vision" ? "Vision chat" : "Text chat"}</dd>
+                        </div>
+                      </dl>
+                      <div className="model-switcher-flags" aria-label="Model capabilities">
+                        {modelFlags.map((flag) => (
+                          <span key={flag}>{flag}</span>
+                        ))}
+                      </div>
+                    </div>
                   </div>
-                  <div>
-                    <dt>Context</dt>
-                    <dd>{formatContextWindow(selectedModel.runtime.contextWindowTokens)}</dd>
-                  </div>
-                  <div>
-                    <dt>Publisher</dt>
-                    <dd>{selectedModel.publisher}</dd>
-                  </div>
-                  <div>
-                    <dt>Mode</dt>
-                    <dd>{selectedModel.task === "vision" ? "Vision chat" : "Text chat"}</dd>
-                  </div>
-                </dl>
-                <div className="model-switcher-flags" aria-label="Model capabilities">
-                  {modelFlags.map((flag) => (
-                    <span key={flag}>{flag}</span>
-                  ))}
+                  <button
+                    className="secondary-button"
+                    onClick={onResetChat}
+                    type="button"
+                    disabled={isGenerating || messages.length === 0}
+                  >
+                    Reset
+                  </button>
                 </div>
               </div>
-            </div>
-            <button
-              className="secondary-button"
-              onClick={onResetChat}
-              type="button"
-              disabled={isGenerating || messages.length === 0}
-            >
-              Reset
-            </button>
-          </div>
-        </header>
+            </header>
 
-        <section className="chat-log" aria-label="Chat messages" ref={chatLogRef}>
-          {messages.length === 0 ? (
-            <div className="empty-state">
-              <p className="empty-title">Start chatting.</p>
-              <p className="empty-copy">
-                {appState === "ready"
-                  ? "The selected model is ready. Ask a question to begin."
-                  : "The selected model is still loading into browser storage."}
-              </p>
-            </div>
-          ) : (
-            messages.map((message) => (
-              <article key={message.id} className={`message message-${message.role}`}>
-                {message.attachment && (
-                  <div className="message-attachment">
-                    <span className="attachment-chip">
-                      Image attached: {message.attachment.name}
-                    </span>
-                  </div>
-                )}
-                {message.role === "assistant" ? (
-                  <div className="markdown-body">
-                    {message.reasoning && (
-                      <details className="reasoning-panel">
-                        <summary>
-                          {message.reasoningState === "streaming" ? "Thinking" : "View thinking"}
-                        </summary>
-                        <div className="reasoning-body">
-                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                            {message.reasoning}
-                          </ReactMarkdown>
-                        </div>
-                      </details>
+            <section className="chat-log" aria-label="Chat messages" ref={chatLogRef}>
+              {messages.length === 0 ? (
+                <div className="empty-state">
+                  <p className="empty-title">Start chatting.</p>
+                  <p className="empty-copy">
+                    {appState === "ready"
+                      ? "The selected model is ready. Ask a question to begin."
+                      : "The selected model is still loading into browser storage."}
+                  </p>
+                  {appState === "ready" && (
+                    <div className="empty-suggestions" aria-label="Starter prompts">
+                      {starterPrompts.map((prompt) => (
+                        <button
+                          key={prompt}
+                          className="empty-suggestion"
+                          type="button"
+                          onClick={() => onInputChange(prompt)}
+                        >
+                          {prompt}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                messages.map((message) => (
+                  <article key={message.id} className={`message message-${message.role}`}>
+                    {message.attachment && (
+                      <div className="message-attachment">
+                        <span className="attachment-chip">
+                          Image attached: {message.attachment.name}
+                        </span>
+                      </div>
                     )}
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                      {message.content ||
-                        (message.reasoningState === "streaming"
-                          ? ""
-                          : isGenerating
-                            ? "Thinking..."
-                            : "")}
-                    </ReactMarkdown>
-                    {message.reasoningState === "streaming" && !message.content && (
-                      <p className="thinking-indicator">Thinking…</p>
+                    {message.role === "assistant" ? (
+                      <div className="markdown-body">
+                        {message.reasoning && (
+                          <details className="reasoning-panel">
+                            <summary>
+                              {message.reasoningState === "streaming" ? "Thinking" : "View thinking"}
+                            </summary>
+                            <div className="reasoning-body">
+                              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                {message.reasoning}
+                              </ReactMarkdown>
+                            </div>
+                          </details>
+                        )}
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                          {message.content ||
+                            (message.reasoningState === "streaming"
+                              ? ""
+                              : isGenerating
+                                ? "Thinking..."
+                                : "")}
+                        </ReactMarkdown>
+                        {message.reasoningState === "streaming" && !message.content && (
+                          <p className="thinking-indicator">Thinking…</p>
+                        )}
+                      </div>
+                    ) : (
+                      <p className="message-content">{message.content}</p>
                     )}
-                  </div>
-                ) : (
-                  <p className="message-content">{message.content}</p>
-                )}
-              </article>
-            ))
-          )}
-        </section>
+                  </article>
+                ))
+              )}
+            </section>
 
-        <form className="composer" onSubmit={onSubmit}>
-          {isVisionMode && (
-            <div className="composer-attachments">
-              <input
-                ref={fileInputRef}
-                className="sr-only"
-                id="vision-upload"
-                type="file"
-                accept="image/*"
-                onChange={onFileChange}
+            <form className="composer" onSubmit={onSubmit}>
+              {isVisionMode && (
+                <div className="composer-attachments">
+                  <input
+                    ref={fileInputRef}
+                    className="sr-only"
+                    id="vision-upload"
+                    type="file"
+                    accept="image/*"
+                    onChange={onFileChange}
+                    disabled={appState !== "ready" || isGenerating}
+                  />
+                  <button
+                    className="attach-button"
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={appState !== "ready" || isGenerating}
+                  >
+                    Attach image
+                  </button>
+                  {draftAttachment && (
+                    <button
+                      className="attachment-chip attachment-chip-action"
+                      type="button"
+                      onClick={onRemoveAttachment}
+                    >
+                      {draftAttachment.name} · {formatBytes(draftAttachment.size) ?? "image"} ×
+                    </button>
+                  )}
+                </div>
+              )}
+              <label className="sr-only" htmlFor="chat-input">
+                Ask the model something
+              </label>
+              <textarea
+                id="chat-input"
+                className="composer-input"
+                value={input}
+                onChange={(event) => onInputChange(event.target.value)}
+                onKeyDown={onComposerKeyDown}
+                placeholder={
+                  appState === "ready"
+                    ? isVisionMode
+                      ? "Type a prompt, or attach an image and ask about it..."
+                      : "Message the model..."
+                    : "Model is downloading into your browser..."
+                }
+                rows={2}
                 disabled={appState !== "ready" || isGenerating}
               />
-              <button
-                className="attach-button"
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={appState !== "ready" || isGenerating}
-              >
-                Attach image
-              </button>
-              {draftAttachment && (
+              <div className="composer-footer">
+                <p className={`hint ${error ? "error-text" : ""}`}>
+                  {error
+                    ? error
+                    : appState === "ready"
+                      ? "Press Enter to send. Use Shift+Enter for a new line."
+                      : progress?.loaded && progress.total
+                        ? `Downloading ${formatBytes(progress.loaded)} / ${formatBytes(progress.total)}`
+                        : "Send unlocks automatically once the model is ready."}
+                </p>
                 <button
-                  className="attachment-chip attachment-chip-action"
-                  type="button"
-                  onClick={onRemoveAttachment}
+                  className="primary-button"
+                  type="submit"
+                  disabled={
+                    appState !== "ready" ||
+                    isGenerating ||
+                    (input.trim().length === 0 && !draftAttachment)
+                  }
                 >
-                  {draftAttachment.name} · {formatBytes(draftAttachment.size) ?? "image"} ×
+                  {isGenerating ? "Generating..." : appState === "ready" ? "Send" : "Loading..."}
                 </button>
-              )}
-            </div>
-          )}
-          <label className="sr-only" htmlFor="chat-input">
-            Ask the model something
-          </label>
-          <textarea
-            id="chat-input"
-            className="composer-input"
-            value={input}
-            onChange={(event) => onInputChange(event.target.value)}
-            onKeyDown={onComposerKeyDown}
-            placeholder={
-              appState === "ready"
-                ? isVisionMode
-                  ? "Type a prompt, or attach an image and ask about it..."
-                  : "Message the model..."
-                : "Model is downloading into your browser..."
-            }
-            rows={2}
-            disabled={appState !== "ready" || isGenerating}
-          />
-          <div className="composer-footer">
-            <p className={`hint ${error ? "error-text" : ""}`}>
-              {error
-                ? error
-                : appState === "ready"
-                  ? "Press Enter to send. Use Shift+Enter for a new line."
-                  : progress?.loaded && progress.total
-                    ? `Downloading ${formatBytes(progress.loaded)} / ${formatBytes(progress.total)}`
-                    : "Send unlocks automatically once the model is ready."}
-            </p>
-            <button
-              className="primary-button"
-              type="submit"
-              disabled={
-                appState !== "ready" ||
-                isGenerating ||
-                (input.trim().length === 0 && !draftAttachment)
-              }
-            >
-              {isGenerating ? "Generating..." : appState === "ready" ? "Send" : "Loading..."}
-            </button>
+              </div>
+            </form>
           </div>
-        </form>
+        </div>
       </section>
     </main>
   );
