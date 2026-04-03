@@ -1,4 +1,5 @@
 import type {
+  AppSettings,
   ChatThread,
   LocalModelVerdictCache,
   LocalModelVerdictEntry,
@@ -6,6 +7,7 @@ import type {
   PickerTab,
   StorageWriteResult,
 } from "./types";
+import { DEFAULT_APP_SETTINGS } from "./types";
 
 const LAST_MODEL_KEY = "webllm:last-model";
 const RECENT_MODELS_KEY = "webllm:recent-models";
@@ -14,6 +16,7 @@ const SHOW_EXPERIMENTAL_KEY = "webllm:show-experimental";
 const MODEL_VERDICT_CACHE_KEY = "webllm:model-verdict-cache";
 const CHAT_THREADS_KEY = "webllm:chat-threads";
 const ACTIVE_CHAT_THREAD_KEY = "webllm:active-chat-thread";
+const APP_SETTINGS_KEY = "webllm:app-settings";
 
 const readJson = <T>(key: string, fallback: T) => {
   if (typeof window === "undefined") {
@@ -99,3 +102,10 @@ export const loadActiveChatThreadId = () =>
 
 export const saveActiveChatThreadId = (threadId: string | null) =>
   threadId ? writeJson(ACTIVE_CHAT_THREAD_KEY, threadId) : removeValue(ACTIVE_CHAT_THREAD_KEY);
+
+export const loadAppSettings = (): AppSettings => {
+  const stored = readJson<Partial<AppSettings>>(APP_SETTINGS_KEY, {});
+  return { ...DEFAULT_APP_SETTINGS, ...stored };
+};
+
+export const saveAppSettings = (settings: AppSettings) => writeJson(APP_SETTINGS_KEY, settings);

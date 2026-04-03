@@ -105,6 +105,30 @@ export type SearchFilters = {
   showExperimental: boolean;
 };
 
+export type MaxTokenMode = "static" | "percentage";
+
+export type AppSettings = {
+  temperature: number;
+  topP: number;
+  maxTokenMode: MaxTokenMode;
+  staticMaxTokens: number;
+  percentageMaxTokens: number;
+};
+
+export const DEFAULT_APP_SETTINGS: AppSettings = {
+  temperature: 0.7,
+  topP: 0.9,
+  maxTokenMode: "static",
+  staticMaxTokens: 2048,
+  percentageMaxTokens: 20,
+};
+
+export type GenerationOptions = {
+  maxNewTokens: number;
+  temperature: number;
+  topP: number;
+};
+
 export type LocalModelVerdictEntry = {
   status: LocalModelVerdict;
   lastLoadedAt: string;
@@ -121,7 +145,12 @@ export type WorkerRequest =
   | { type: "LOAD_MODEL"; payload: { model: ModelDescriptor } }
   | {
       type: "GENERATE";
-      payload: { model: ModelDescriptor; messages: ChatMessage[]; image?: File | null };
+      payload: {
+        model: ModelDescriptor;
+        messages: ChatMessage[];
+        image?: File | null;
+        options: GenerationOptions;
+      };
     }
   | { type: "RESET_CHAT" };
 

@@ -7,10 +7,9 @@ import {
 } from "@huggingface/transformers";
 import type { Tensor } from "@huggingface/transformers";
 
-import type { ChatMessage, ModelDescriptor, WorkerRequest, WorkerResponse } from "./types";
+import type { ChatMessage, GenerationOptions, ModelDescriptor, WorkerRequest, WorkerResponse } from "./types";
 
-const GENERATION_CONFIG = {
-  max_new_tokens: 2048,
+const DEFAULT_GENERATION_CONFIG = {
   temperature: 0.7,
   top_p: 0.9,
   do_sample: true,
@@ -250,7 +249,11 @@ const toVisionConversation = (messages: ChatMessage[], hasImage: boolean) =>
     };
   });
 
-const generateTextReply = async (model: ModelDescriptor, messages: ChatMessage[]) => {
+const generateTextReply = async (
+  model: ModelDescriptor,
+  messages: ChatMessage[],
+  options: GenerationOptions,
+) => {
   await ensureModelReady(model);
 
   if (!textGenerator) {
@@ -270,7 +273,10 @@ const generateTextReply = async (model: ModelDescriptor, messages: ChatMessage[]
   });
 
   const output = await textGenerator(toTextConversation(messages), {
-    ...GENERATION_CONFIG,
+    ...DEFAULT_GENERATION_CONFIG,
+    max_new_tokens: options.maxNewTokens,
+    temperature: options.temperature,
+    top_p: options.topP,
     return_full_text: false,
     streamer,
     tokenizer_encode_kwargs: {
@@ -287,6 +293,7 @@ const generateTextReply = async (model: ModelDescriptor, messages: ChatMessage[]
 const generateVisionReply = async (
   model: ModelDescriptor,
   messages: ChatMessage[],
+  options: GenerationOptions,
   image?: File | null,
 ) => {
   await ensureModelReady(model);
@@ -313,7 +320,10 @@ const generateVisionReply = async (
 
   const output = await visionModel.generate({
     ...inputs,
-    ...GENERATION_CONFIG,
+    ...DEFAULT_GENERATION_CONFIG,
+    max_new_tokens: options.maxNewTokens,
+    temperature: options.temperature,
+    top_p: options.topP,
     streamer,
   });
 
@@ -344,13 +354,13 @@ self.addEventListener("message", async (event: MessageEvent<WorkerRequest>) => {
       break;
     }
     case "GENERATE": {
-      const { model, messages, image } = event.data.payload;
+      const { model, messages, image, options } = event.data.payload;
 
       try {
         const text =
           model.task === "vision"
-            ? await generateVisionReply(model, messages, image)
-            : await generateTextReply(model, messages);
+            ? await generateVisionReply(model, messages, options, image)
+            : await generateTextReply(model, messages, options);
 
         postMessageToUi({ type: "GENERATION_DONE", payload: { modelId: model.id, text } });
       } catch (error) {

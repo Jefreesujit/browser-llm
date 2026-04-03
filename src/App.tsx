@@ -12,6 +12,7 @@ import {
 import ChatScreen from "./components/ChatScreen";
 import LandingScreen from "./components/LandingScreen";
 import ModelPickerDialog from "./components/ModelPickerDialog";
+import SettingsDialog from "./components/SettingsDialog";
 import { getCompatibilityReport, shouldShowSearchModel } from "./compatibility";
 import { detectDeviceCapabilities } from "./device";
 import { searchHubModels, fetchHubModelDetails, enrichModelDescriptor } from "./hf";
@@ -24,6 +25,7 @@ import {
 } from "./models";
 import {
   loadActiveChatThreadId,
+  loadAppSettings,
   loadChatThreads,
   loadLastModel,
   loadModelVerdictCache,
@@ -32,6 +34,7 @@ import {
   loadShowExperimental,
   pushRecentModel,
   saveActiveChatThreadId,
+  saveAppSettings,
   saveChatThreads,
   saveLastModel,
   savePickerTab,
@@ -40,9 +43,11 @@ import {
   upsertModelVerdict,
 } from "./storage";
 import type {
+  AppSettings,
   ChatMessage,
   ChatThread,
   DeviceCapabilities,
+  GenerationOptions,
   LocalModelVerdictCache,
   ModelDescriptor,
   PickerTab,
@@ -50,6 +55,7 @@ import type {
   WorkerRequest,
   WorkerResponse,
 } from "./types";
+import { DEFAULT_APP_SETTINGS } from "./types";
 
 type Screen = "landing" | "chat";
 type AppState = "loading" | "ready";
@@ -65,6 +71,22 @@ type DraftAttachment = {
   name: string;
   mimeType: string;
   size: number;
+};
+
+const computeGenerationOptions = (
+  settings: AppSettings,
+  contextWindowTokens: number,
+): GenerationOptions => {
+  const maxNewTokens =
+    settings.maxTokenMode === "percentage"
+      ? Math.max(64, Math.floor((contextWindowTokens * settings.percentageMaxTokens) / 100))
+      : settings.staticMaxTokens;
+
+  return {
+    maxNewTokens: Math.min(maxNewTokens, contextWindowTokens),
+    temperature: settings.temperature,
+    topP: settings.topP,
+  };
 };
 
 const THINK_OPEN_TAG = "<think>";
@@ -222,6 +244,8 @@ function App() {
   const [chatThreads, setChatThreads] = useState<ChatThread[]>(initialThreadState.threads);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(initialThreadState.activeThreadId);
   const [chatStorageWarning, setChatStorageWarning] = useState<string | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [appSettings, setAppSettings] = useState<AppSettings>(loadAppSettings());
   const [searchFilters, setSearchFilters] = useState<SearchFilters>({
     mobileSafe: deviceCapabilities.tier === "mobile",
     verifiedOnly: false,
@@ -761,17 +785,6 @@ function App() {
     }
   };
 
-  const resetChat = () => {
-    setMessages([]);
-    setInput("");
-    setDraftAttachment(null);
-    setError(null);
-    if (fileInputRef.current) {
-      fileInputRef.current.value = "";
-    }
-    workerRef.current?.postMessage({ type: "RESET_CHAT" } satisfies WorkerRequest);
-  };
-
   const resolveSelectedModel = async (model: ModelDescriptor) => {
     const baseModel =
       model.source === "search"
@@ -893,6 +906,7 @@ function App() {
         model: selectedModelWithCompatibility,
         messages: nextMessages,
         image: draftAttachment?.file ?? null,
+        options: computeGenerationOptions(appSettings, selectedModelWithCompatibility.runtime.contextWindowTokens),
       },
     } satisfies WorkerRequest);
   };
@@ -934,6 +948,37 @@ function App() {
   useEffect(() => {
     saveRecentModels(recentModels);
   }, [recentModels]);
+
+  const openSettings = () => setSettingsOpen(true);
+  const closeSettings = () => setSettingsOpen(false);
+
+  const saveSettings = (next: AppSettings) => {
+    setAppSettings(next);
+    saveAppSettings(next);
+  };
+
+  const clearAllChats = () => {
+    setChatThreads([]);
+    setActiveThreadId(null);
+    setSelectedModel(null);
+    setMessages([]);
+    setInput("");
+    setDraftAttachment(null);
+    setError(null);
+    setScreen("landing");
+    saveChatThreads([]);
+    saveActiveChatThreadId(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+  };
+
+  const clearAllData = () => {
+    clearAllChats();
+    setLocalVerdicts({});
+    setRecentModels([]);
+    saveRecentModels([]);
+  };
 
   useEffect(() => {
     savePickerTab(pickerTab);
@@ -1022,7 +1067,7 @@ function App() {
         onSelectThread={openThread}
         onDeleteThread={deleteThread}
         onChangeModel={() => openPicker("curated")}
-        onResetChat={resetChat}
+        onOpenSettings={openSettings}
         onInputChange={setInput}
         onSubmit={handleSubmit}
         onComposerKeyDown={handleComposerKeyDown}
@@ -1049,6 +1094,16 @@ function App() {
         onSearchQueryChange={setSearchQuery}
         onToggleFilter={toggleSearchFilter}
         onLoadModel={requestModelLoad}
+      />
+
+      <SettingsDialog
+        open={settingsOpen}
+        settings={appSettings}
+        contextWindowTokens={selectedModelWithCompatibility?.runtime.contextWindowTokens ?? null}
+        onClose={closeSettings}
+        onSave={saveSettings}
+        onClearChatHistory={clearAllChats}
+        onClearAllData={clearAllData}
       />
 
       {pendingModel && (
