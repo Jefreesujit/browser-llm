@@ -3,7 +3,7 @@ import type { ChatThread } from "../types";
 type ChatHistorySidebarProps = {
   threads: ChatThread[];
   activeThreadId: string | null;
-  disabled?: boolean;
+  disableMutations?: boolean;
   storageWarning?: string | null;
   onCreateThread: () => void;
   onSelectThread: (threadId: string) => void;
@@ -42,7 +42,7 @@ const formatRelativeDate = (value: string) => {
 function ChatHistorySidebar({
   threads,
   activeThreadId,
-  disabled = false,
+  disableMutations = false,
   storageWarning,
   onCreateThread,
   onSelectThread,
@@ -57,7 +57,7 @@ function ChatHistorySidebar({
             className="secondary-button chat-history-new"
             type="button"
             onClick={onCreateThread}
-            disabled={disabled}
+            disabled={disableMutations}
           >
             New Chat
           </button>
@@ -83,7 +83,6 @@ function ChatHistorySidebar({
                 onClick={() => onSelectThread(thread.id)}
                 aria-current={thread.id === activeThreadId ? "page" : undefined}
                 title={thread.title}
-                disabled={disabled}
               >
                 <span className="chat-history-title">{thread.title}</span>
                 <span className="chat-history-meta">{formatRelativeDate(thread.updatedAt)}</span>
@@ -94,7 +93,7 @@ function ChatHistorySidebar({
                 onClick={() => onDeleteThread(thread.id)}
                 aria-label={`Delete ${thread.title}`}
                 title="Delete chat"
-                disabled={disabled}
+                disabled={disableMutations}
               >
                 ×
               </button>

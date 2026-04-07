@@ -374,6 +374,31 @@ export const CURATED_MODELS: ModelDescriptor[] = [
       contextWindowTokens: 32768,
     },
   }),
+  createTextModel({
+    id: "onnx-community/gemma-4-E2B-it-ONNX",
+    label: "Gemma 4 2B",
+    summary: "Experimental new Gemma model with strong reasoning capabilities.",
+    publisher: "onnx-community",
+    paramsLabel: "2B params",
+    parameterTier: "L",
+    estimatedDownloadLabel: "Desktop experimental download",
+    category: "desktop_experimental",
+    starter: false,
+    tested: false,
+    hf: {
+      modelId: "onnx-community/gemma-4-E2B-it-ONNX",
+      pipelineTag: "text-generation",
+      libraryName: "transformers.js",
+      tags: ["transformers.js", "text-generation", "conversational"],
+      baseModel: "google/gemma-4-E2B-it",
+      hasChatTemplate: true,
+    },
+    runtime: {
+      preferredDtype: "q4f16",
+      fallbackDtype: "q4",
+      contextWindowTokens: 32768,
+    },
+  }),
 ];
 
 export const CURATED_MODELS_BY_ID = Object.fromEntries(

@@ -1,4 +1,10 @@
-export type ChatRole = "user" | "assistant";
+export type ChatRole = "system" | "user" | "assistant";
+
+export type ChatAttachment = {
+  name: string;
+  mimeType: string;
+  size: number;
+};
 
 export type ChatMessage = {
   id: string;
@@ -7,20 +13,36 @@ export type ChatMessage = {
   rawContent?: string;
   reasoning?: string;
   reasoningState?: "streaming" | "complete";
-  attachment?: {
-    name: string;
-    mimeType: string;
-    size: number;
-  };
+  attachment?: ChatAttachment;
+};
+
+export type ThreadMessageStatus = "complete" | "streaming" | "error";
+
+export type ThreadMessage = ChatMessage & {
+  threadId: string;
+  sequence: number;
+  createdAt: string;
+  status: ThreadMessageStatus;
+  requestId?: string;
+};
+
+export type ThreadUiState = {
+  threadId: string;
+  draftText: string;
+  scrollTop: number;
+  updatedAt: string;
 };
 
 export type ChatThread = {
   id: string;
   title: string;
   model: ModelDescriptor;
-  messages: ChatMessage[];
   createdAt: string;
   updatedAt: string;
+  lastMessagePreview: string | null;
+  messageCount: number;
+  memorySummary: string | null;
+  summaryUpToSequence: number;
 };
 
 export type ModelTask = "text" | "vision";
@@ -44,6 +66,11 @@ export type CuratedCategoryKey =
   | "desktop_experimental";
 export type Dtype = "q4f16" | "q4" | "q8" | "int8" | "uint8" | "fp16" | "fp32";
 export type VisionLoaderKind = "qwen3_5";
+export type ChatPersistenceStatus =
+  | "ready"
+  | "fallback_local_storage"
+  | "quota_exceeded"
+  | "unavailable";
 
 export type DeviceCapabilities = {
   hasWebGpu: boolean;
@@ -138,21 +165,42 @@ export type LocalModelVerdictCache = Record<string, LocalModelVerdictEntry>;
 
 export type StorageWriteResult = {
   ok: boolean;
-  reason?: "quota" | "unavailable";
+  reason?: "quota" | "unavailable" | "blocked";
+};
+
+export type ChatStoreSnapshot = {
+  thread: ChatThread;
+  messages: ThreadMessage[];
+  uiState: ThreadUiState | null;
+};
+
+export type ChatStore = {
+  kind: "indexeddb" | "localstorage";
+  listThreads: () => Promise<ChatThread[]>;
+  getSnapshot: (threadId: string) => Promise<ChatStoreSnapshot | null>;
+  putThread: (thread: ChatThread) => Promise<StorageWriteResult>;
+  putMessages: (threadId: string, messages: ThreadMessage[]) => Promise<StorageWriteResult>;
+  putUiState: (uiState: ThreadUiState) => Promise<StorageWriteResult>;
+  deleteThread: (threadId: string) => Promise<StorageWriteResult>;
+  clearAll: () => Promise<StorageWriteResult>;
 };
 
 export type WorkerRequest =
   | { type: "LOAD_MODEL"; payload: { model: ModelDescriptor } }
+  | { type: "STOP_GENERATION"; payload?: { threadId?: string; requestId?: string } }
   | {
       type: "GENERATE";
       payload: {
+        threadId: string;
+        requestId: string;
         model: ModelDescriptor;
-        messages: ChatMessage[];
+        summary: string | null;
+        summaryUpToSequence: number;
+        messages: ThreadMessage[];
         image?: File | null;
         options: GenerationOptions;
       };
-    }
-  | { type: "RESET_CHAT" };
+    };
 
 export type WorkerResponse =
   | {
@@ -170,6 +218,22 @@ export type WorkerResponse =
       type: "MODEL_LOAD_RESULT";
       payload: { modelId: string; status: "verified" | "failed_on_device"; message?: string };
     }
-  | { type: "STREAM_TOKEN"; payload: { modelId: string; text: string } }
-  | { type: "GENERATION_DONE"; payload: { modelId: string; text: string } }
-  | { type: "ERROR"; payload: { modelId: string; message: string } };
+  | {
+      type: "STREAM_TOKEN";
+      payload: { threadId: string; requestId: string; modelId: string; text: string };
+    }
+  | {
+      type: "GENERATION_DONE";
+      payload: {
+        threadId: string;
+        requestId: string;
+        modelId: string;
+        text: string;
+        summary: string | null;
+        summaryUpToSequence: number;
+      };
+    }
+  | {
+      type: "ERROR";
+      payload: { threadId?: string; requestId?: string; modelId: string; message: string };
+    };

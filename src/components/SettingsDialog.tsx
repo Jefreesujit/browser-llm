@@ -1,27 +1,50 @@
 import { useEffect, useState } from "react";
 
-import { clearAllModelCache, deleteModelCache, getInstalledModels, type InstalledModelEntry } from "../cache";
-import type { AppSettings } from "../types";
+import {
+  clearAllModelCache,
+  deleteModelCache,
+  getInstalledModels,
+  type InstalledModelEntry,
+} from "../cache";
+import { formatBytes } from "../format";
+import type { AppSettings, ChatPersistenceStatus } from "../types";
 import { DEFAULT_APP_SETTINGS } from "../types";
 
-type SettingsTab = "generation" | "data";
+type SettingsTab = "generation" | "data" | "models";
 
 type SettingsDialogProps = {
   open: boolean;
   settings: AppSettings;
   contextWindowTokens: number | null;
+  storageStatus: ChatPersistenceStatus;
+  storageWarning?: string | null;
   onClose: () => void;
   onSave: (settings: AppSettings) => void;
   onClearChatHistory: () => void;
   onClearAllData: () => void;
+  onClearAllDownloadedModels: () => void;
 };
 
 const TAB_LABELS: Record<SettingsTab, string> = {
   generation: "Generation",
   data: "Data",
+  models: "Models",
 };
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+
+const getStorageLabel = (status: ChatPersistenceStatus) => {
+  switch (status) {
+    case "fallback_local_storage":
+      return "Using localStorage fallback";
+    case "quota_exceeded":
+      return "Storage full";
+    case "unavailable":
+      return "Storage unavailable";
+    default:
+      return "IndexedDB ready";
+  }
+};
 
 function GenerationTab({
   draft,
@@ -34,17 +57,12 @@ function GenerationTab({
   onChange: (patch: Partial<AppSettings>) => void;
   onReset: () => void;
 }) {
-  const effectiveMax = draft.maxTokenMode === "percentage"
-    ? draft.percentageMaxTokens
-    : draft.staticMaxTokens;
-
   const previewTokens = contextWindowTokens
     ? Math.floor((contextWindowTokens * draft.percentageMaxTokens) / 100)
     : null;
 
   return (
     <div className="settings-section">
-      {/* ── Temperature ── */}
       <div className="settings-field">
         <div className="settings-field-header">
           <label htmlFor="settings-temperature" className="settings-field-label">
@@ -53,7 +71,7 @@ function GenerationTab({
           <span className="settings-field-value">{draft.temperature.toFixed(2)}</span>
         </div>
         <p className="settings-field-description">
-          Controls randomness. Lower values give more focused outputs; higher values introduce more variety.
+          Lower values keep responses tighter. Higher values make outputs more varied.
         </p>
         <input
           id="settings-temperature"
@@ -66,21 +84,20 @@ function GenerationTab({
           onChange={(e) => onChange({ temperature: parseFloat(e.target.value) })}
         />
         <div className="settings-slider-labels">
-          <span>Focused (0)</span>
-          <span>Creative (2)</span>
+          <span>Focused</span>
+          <span>Creative</span>
         </div>
       </div>
 
-      {/* ── Top-P ── */}
       <div className="settings-field">
         <div className="settings-field-header">
           <label htmlFor="settings-top-p" className="settings-field-label">
-            Top-P (nucleus sampling)
+            Top-P
           </label>
           <span className="settings-field-value">{draft.topP.toFixed(2)}</span>
         </div>
         <p className="settings-field-description">
-          Limits sampling to the top tokens whose cumulative probability reaches P. Lower values tighten the token pool.
+          Limits sampling to the highest-probability tokens until the cumulative mass reaches P.
         </p>
         <input
           id="settings-top-p"
@@ -93,12 +110,11 @@ function GenerationTab({
           onChange={(e) => onChange({ topP: parseFloat(e.target.value) })}
         />
         <div className="settings-slider-labels">
-          <span>Tight (0.01)</span>
-          <span>Open (1.0)</span>
+          <span>Tight</span>
+          <span>Open</span>
         </div>
       </div>
 
-      {/* ── Max output tokens ── */}
       <div className="settings-field">
         <div className="settings-field-header">
           <span className="settings-field-label">Max response tokens</span>
@@ -123,11 +139,10 @@ function GenerationTab({
         {draft.maxTokenMode === "static" ? (
           <>
             <p className="settings-field-description">
-              Maximum tokens the model can produce in a single response.
+              Hard cap for the number of tokens generated per reply.
             </p>
             <div className="settings-number-row">
               <input
-                id="settings-static-tokens"
                 className="settings-number-input"
                 type="number"
                 min={64}
@@ -144,14 +159,10 @@ function GenerationTab({
         ) : (
           <>
             <p className="settings-field-description">
-              Cap responses to a percentage of the loaded model's context window (max 20%).
-              {contextWindowTokens && previewTokens !== null && (
-                <> With the current model ({contextWindowTokens.toLocaleString()} tokens), this is <strong>≈{previewTokens.toLocaleString()} tokens</strong>.</>
-              )}
+              Use a percentage of the model context window for the maximum response length.
             </p>
             <div className="settings-number-row">
               <input
-                id="settings-percent-tokens"
                 className="settings-slider"
                 type="range"
                 min={1}
@@ -174,51 +185,104 @@ function GenerationTab({
 
       <div className="settings-effective-summary">
         {draft.maxTokenMode === "static" ? (
-          <>Effective limit: <strong>{draft.staticMaxTokens.toLocaleString()} tokens</strong></>
+          <>
+            Effective limit: <strong>{draft.staticMaxTokens.toLocaleString()} tokens</strong>
+          </>
         ) : contextWindowTokens && previewTokens !== null ? (
-          <>Effective limit: <strong>≈{previewTokens.toLocaleString()} tokens</strong> ({draft.percentageMaxTokens}% of {contextWindowTokens.toLocaleString()})</>
+          <>
+            Effective limit: <strong>≈{previewTokens.toLocaleString()} tokens</strong>
+          </>
         ) : (
-          <>Effective limit: <strong>{draft.percentageMaxTokens}%</strong> of model context</>
+          <>
+            Effective limit: <strong>{draft.percentageMaxTokens}% of context</strong>
+          </>
         )}
       </div>
 
       <button type="button" className="settings-reset-btn" onClick={onReset}>
         Reset to defaults
       </button>
-
-      <p className="settings-note">
-        Note: Temperature and Top-P affect all models uniformly. Max tokens applies per-response and is bounded by the loaded model's context window.
-      </p>
-
-      <div className="settings-void" style={{ height: effectiveMax > 0 ? "0" : "0" }} />
     </div>
   );
 }
 
 function DataTab({
+  storageStatus,
+  storageWarning,
   onClearChatHistory,
   onClearAllData,
 }: {
+  storageStatus: ChatPersistenceStatus;
+  storageWarning?: string | null;
   onClearChatHistory: () => void;
   onClearAllData: () => void;
+}) {
+  return (
+    <div className="settings-section">
+      <div className="settings-field">
+        <div className="settings-field-header">
+          <span className="settings-field-label">Storage health</span>
+          <span className="settings-field-value">{getStorageLabel(storageStatus)}</span>
+        </div>
+        <p className="settings-field-description">
+          Chats are stored locally in this browser. Lightweight preferences stay in local storage.
+        </p>
+        {storageWarning && <p className="settings-warning-copy">{storageWarning}</p>}
+      </div>
+
+      <div className="settings-field">
+        <div className="settings-field-header">
+          <span className="settings-field-label">Chat history</span>
+        </div>
+        <p className="settings-field-description">
+          Deletes all saved conversations but keeps downloaded models and general preferences.
+        </p>
+        <button type="button" className="settings-danger-btn" onClick={onClearChatHistory}>
+          Clear chat history
+        </button>
+      </div>
+
+      <div className="settings-field">
+        <div className="settings-field-header">
+          <span className="settings-field-label">App data</span>
+        </div>
+        <p className="settings-field-description">
+          Clears chat history, model verdicts, recent models, and saved settings in this browser.
+        </p>
+        <button type="button" className="settings-danger-btn" onClick={onClearAllData}>
+          Clear all app data
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ModelsTab({
+  onClearAllDownloadedModels,
+}: {
+  onClearAllDownloadedModels: () => void;
 }) {
   const [installedModels, setInstalledModels] = useState<InstalledModelEntry[]>([]);
   const [loadingModels, setLoadingModels] = useState(true);
   const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
   const [clearingAll, setClearingAll] = useState(false);
 
-  useEffect(() => {
+  const reload = () => {
     setLoadingModels(true);
     getInstalledModels()
       .then(setInstalledModels)
       .finally(() => setLoadingModels(false));
+  };
+
+  useEffect(() => {
+    reload();
   }, []);
 
   const handleDeleteModel = async (modelId: string) => {
     setDeletingIds((prev) => new Set([...prev, modelId]));
     try {
       await deleteModelCache(modelId);
-      setInstalledModels((prev) => prev.filter((m) => m.modelId !== modelId));
+      await reload();
     } finally {
       setDeletingIds((prev) => {
         const next = new Set(prev);
@@ -232,8 +296,8 @@ function DataTab({
     setClearingAll(true);
     try {
       await clearAllModelCache();
+      onClearAllDownloadedModels();
       setInstalledModels([]);
-      onClearAllData();
     } finally {
       setClearingAll(false);
     }
@@ -241,26 +305,12 @@ function DataTab({
 
   return (
     <div className="settings-section">
-      {/* ── Chat History ── */}
-      <div className="settings-field">
-        <div className="settings-field-header">
-          <span className="settings-field-label">Chat history</span>
-        </div>
-        <p className="settings-field-description">
-          Removes all saved conversations from this browser. Downloaded models are not affected.
-        </p>
-        <button type="button" className="settings-danger-btn" onClick={onClearChatHistory}>
-          Clear chat history
-        </button>
-      </div>
-
-      {/* ── Downloaded Models ── */}
       <div className="settings-field">
         <div className="settings-field-header">
           <span className="settings-field-label">Downloaded models</span>
         </div>
         <p className="settings-field-description">
-          Models cached in your browser. Removing them frees up browser storage; they'll be re-downloaded on next use.
+          Remove cached model files from browser storage. They will download again next time.
         </p>
 
         {loadingModels ? (
@@ -269,11 +319,14 @@ function DataTab({
           <p className="settings-cache-empty">No downloaded model files found in your browser cache.</p>
         ) : (
           <ul className="settings-model-list">
-            {installedModels.map(({ modelId, fileCount }) => (
+            {installedModels.map(({ modelId, fileCount, approximateBytes }) => (
               <li key={modelId} className="settings-model-row">
                 <div className="settings-model-info">
                   <span className="settings-model-id">{modelId}</span>
-                  <span className="settings-model-meta">{fileCount} file{fileCount !== 1 ? "s" : ""}</span>
+                  <span className="settings-model-meta">
+                    {fileCount} file{fileCount !== 1 ? "s" : ""}
+                    {approximateBytes ? ` · ${formatBytes(approximateBytes)}` : ""}
+                  </span>
                 </div>
                 <button
                   type="button"
@@ -288,7 +341,7 @@ function DataTab({
           </ul>
         )}
 
-        {installedModels.length > 1 && (
+        {installedModels.length > 0 && (
           <button
             type="button"
             className="settings-danger-btn"
@@ -307,10 +360,13 @@ function SettingsDialog({
   open,
   settings,
   contextWindowTokens,
+  storageStatus,
+  storageWarning,
   onClose,
   onSave,
   onClearChatHistory,
   onClearAllData,
+  onClearAllDownloadedModels,
 }: SettingsDialogProps) {
   const [activeTab, setActiveTab] = useState<SettingsTab>("generation");
   const [draft, setDraft] = useState<AppSettings>(settings);
@@ -347,19 +403,10 @@ function SettingsDialog({
     setDraft((current) => ({ ...current, ...patch }));
   };
 
-  const handleSave = () => {
-    onSave(draft);
-    onClose();
-  };
-
-  const handleReset = () => {
-    setDraft(DEFAULT_APP_SETTINGS);
-  };
-
   return (
     <div className="dialog-backdrop" role="presentation" onClick={onClose}>
       <section
-        className="dialog-shell"
+        className="dialog-shell settings-shell"
         role="dialog"
         aria-modal="true"
         aria-label="Settings"
@@ -397,14 +444,19 @@ function SettingsDialog({
               draft={draft}
               contextWindowTokens={contextWindowTokens}
               onChange={handleChange}
-              onReset={handleReset}
+              onReset={() => setDraft(DEFAULT_APP_SETTINGS)}
             />
           )}
           {activeTab === "data" && (
             <DataTab
+              storageStatus={storageStatus}
+              storageWarning={storageWarning}
               onClearChatHistory={onClearChatHistory}
               onClearAllData={onClearAllData}
             />
+          )}
+          {activeTab === "models" && (
+            <ModelsTab onClearAllDownloadedModels={onClearAllDownloadedModels} />
           )}
         </div>
 
@@ -413,7 +465,14 @@ function SettingsDialog({
             <button type="button" className="secondary-button" onClick={onClose}>
               Cancel
             </button>
-            <button type="button" className="primary-button" onClick={handleSave}>
+            <button
+              type="button"
+              className="primary-button"
+              onClick={() => {
+                onSave(draft);
+                onClose();
+              }}
+            >
               Save settings
             </button>
           </footer>

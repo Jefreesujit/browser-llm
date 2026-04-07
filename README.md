@@ -12,11 +12,14 @@ A high-performance, **100% local-first** React application designed to run Large
 
 - **🚀 100% Local Inference**: Your prompts, images, and model outputs never leave your browser. Privacy is built-in by design.
 - **⚡ WebGPU Accelerated**: Utilizes your GPU's power for near-native performance on compatible browsers (Chrome/Edge Desktop).
-- **🧠 Advanced Model Support**:
-  - **Fast (SmolLM2-360M)**: Ultra-quick response times with a tiny footprint.
-  - **Thinking (Qwen 3 - 0.6B)**: Built-in reasoning capabilities for complex logic.
-  - **Vision (Qwen 3.5 - 0.8B)**: Fully multimodal support for image-to-text tasks.
-- **💾 Automatic Caching**: Model weights are fetched from Hugging Face once and stored in your browser's Cache Storage for instant subsequent loads.
+- **🧠 Advanced Model Support**: Access to specialized browser-friendly models, including:
+  - **Balanced (Gemma 3 1B)**: A balanced desktop default for everyday browser chat.
+  - **Reasoning (DeepSeek R1 1.5B)**: Built-in reasoning capabilities for complex logic via distillation.
+  - **Coding (Qwen 2.5 Coder)**: Compact coding helpers for quick edits and code explanations.
+  - **Vision (Qwen 3.5 Vision)**: Fully multimodal support for image-to-text tasks.
+  - **Fast / Mobile-Safe**: SmolLM2 (360M) and Qwen 2.5 (0.5B) for ultra-quick response times.
+- **⚙️ Generation Parameter Controls**: Fine-grained control over model temperature, top-p, and token limits via an intuitive settings dialog.
+- **💾 Storage & Chat Management**: Automatic Hugging Face caching, clear chat history, and robust data management to delete offline model files directly from the UI.
 - **🧵 Worker-Based Architecture**: Heavy computation happens in a dedicated Web Worker to keep the UI smooth and responsive.
 
 ---
@@ -73,7 +76,7 @@ Special thanks to the **Hugging Face** team for the amazing [transformers.js](ht
 
 ---
 
-Built with ❤️ for the future of local AI.
+Built with ❤️ for the future of free, private AI.
 
 ---
 

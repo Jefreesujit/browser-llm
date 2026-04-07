@@ -1,13 +1,10 @@
-// Transformers.js stores all model files in a cache named "transformers-cache".
-// URLs follow the pattern: https://huggingface.co/{owner}/{repo}/resolve/main/{filename}
-// We use these URLs to identify which model a cached file belongs to.
-
 const TRANSFORMERS_CACHE_NAME = "transformers-cache";
 const HF_URL_PREFIX = "https://huggingface.co/";
 
 export type InstalledModelEntry = {
   modelId: string;
   fileCount: number;
+  approximateBytes: number | null;
 };
 
 const extractModelIdFromUrl = (url: string): string | null => {
@@ -15,7 +12,6 @@ const extractModelIdFromUrl = (url: string): string | null => {
     return null;
   }
 
-  // Pattern: https://huggingface.co/{owner}/{repo}/resolve/main/...
   const path = url.slice(HF_URL_PREFIX.length);
   const parts = path.split("/");
 
@@ -24,6 +20,25 @@ const extractModelIdFromUrl = (url: string): string | null => {
   }
 
   return `${parts[0]}/${parts[1]}`;
+};
+
+const readApproximateSize = async (cache: Cache, request: Request) => {
+  try {
+    const response = await cache.match(request);
+    if (!response) {
+      return null;
+    }
+
+    const headerValue = response.headers.get("content-length");
+    if (!headerValue) {
+      return null;
+    }
+
+    const parsed = Number.parseInt(headerValue, 10);
+    return Number.isFinite(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
 };
 
 export const getInstalledModels = async (): Promise<InstalledModelEntry[]> => {
@@ -35,15 +50,46 @@ export const getInstalledModels = async (): Promise<InstalledModelEntry[]> => {
     const cache = await caches.open(TRANSFORMERS_CACHE_NAME);
     const requests = await cache.keys();
 
-    const counts = new Map<string, number>();
-    for (const request of requests) {
-      const modelId = extractModelIdFromUrl(request.url);
-      if (modelId) {
-        counts.set(modelId, (counts.get(modelId) ?? 0) + 1);
+    const entries = new Map<
+      string,
+      {
+        fileCount: number;
+        approximateBytes: number;
+        hasSize: boolean;
       }
-    }
+    >();
 
-    return [...counts.entries()].map(([modelId, fileCount]) => ({ modelId, fileCount }));
+    await Promise.all(
+      requests.map(async (request) => {
+        const modelId = extractModelIdFromUrl(request.url);
+        if (!modelId) {
+          return;
+        }
+
+        const next = entries.get(modelId) ?? {
+          fileCount: 0,
+          approximateBytes: 0,
+          hasSize: false,
+        };
+
+        next.fileCount += 1;
+        const size = await readApproximateSize(cache, request);
+        if (typeof size === "number" && size > 0) {
+          next.approximateBytes += size;
+          next.hasSize = true;
+        }
+
+        entries.set(modelId, next);
+      }),
+    );
+
+    return [...entries.entries()]
+      .map(([modelId, entry]) => ({
+        modelId,
+        fileCount: entry.fileCount,
+        approximateBytes: entry.hasSize ? entry.approximateBytes : null,
+      }))
+      .sort((left, right) => left.modelId.localeCompare(right.modelId));
   } catch {
     return [];
   }

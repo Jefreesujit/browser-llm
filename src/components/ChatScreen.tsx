@@ -117,6 +117,9 @@ type ChatScreenProps = {
   onComposerKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
   onFileChange: () => void;
   onRemoveAttachment: () => void;
+  onChatScroll: (scrollTop: number) => void;
+  onStopGeneration: () => void;
+  stopRequested: boolean;
 };
 
 function ChatScreen({
@@ -145,6 +148,9 @@ function ChatScreen({
   onComposerKeyDown,
   onFileChange,
   onRemoveAttachment,
+  onChatScroll,
+  onStopGeneration,
+  stopRequested,
 }: ChatScreenProps) {
   const isVisionMode = selectedModel.task === "vision";
   const starterPrompts = getStarterPrompts(selectedModel);
@@ -168,7 +174,7 @@ function ChatScreen({
           <ChatHistorySidebar
             threads={threads}
             activeThreadId={activeThreadId}
-            disabled={isGenerating}
+            disableMutations={isGenerating}
             storageWarning={storageWarning}
             onCreateThread={onCreateThread}
             onSelectThread={onSelectThread}
@@ -253,7 +259,12 @@ function ChatScreen({
               </div>
             </header>
 
-            <section className="chat-log" aria-label="Chat messages" ref={chatLogRef}>
+            <section
+              className="chat-log"
+              aria-label="Chat messages"
+              ref={chatLogRef}
+              onScroll={(event) => onChatScroll(event.currentTarget.scrollTop)}
+            >
               {messages.length === 0 ? (
                 <div className="empty-state">
                   <p className="empty-title">Start chatting.</p>
@@ -375,23 +386,34 @@ function ChatScreen({
                 <p className={`hint ${error ? "error-text" : ""}`}>
                   {error
                     ? error
+                    : isGenerating && stopRequested
+                      ? "Stopping generation..."
                     : appState === "ready"
                       ? "Press Enter to send. Use Shift+Enter for a new line."
                       : progress?.loaded && progress.total
                         ? `Downloading ${formatBytes(progress.loaded)} / ${formatBytes(progress.total)}`
                         : "Send unlocks automatically once the model is ready."}
                 </p>
-                <button
-                  className="primary-button"
-                  type="submit"
-                  disabled={
-                    appState !== "ready" ||
-                    isGenerating ||
-                    (input.trim().length === 0 && !draftAttachment)
-                  }
-                >
-                  {isGenerating ? "Generating..." : appState === "ready" ? "Send" : "Loading..."}
-                </button>
+                {isGenerating ? (
+                  <button
+                    className="primary-button"
+                    type="button"
+                    onClick={onStopGeneration}
+                    disabled={stopRequested}
+                  >
+                    {stopRequested ? "Stopping..." : "Stop"}
+                  </button>
+                ) : (
+                  <button
+                    className="primary-button"
+                    type="submit"
+                    disabled={
+                      appState !== "ready" || (input.trim().length === 0 && !draftAttachment)
+                    }
+                  >
+                    {appState === "ready" ? "Send" : "Loading..."}
+                  </button>
+                )}
               </div>
             </form>
           </div>
