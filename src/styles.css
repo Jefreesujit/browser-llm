@@ -1,7 +1,11 @@
 :root {
   color: #102127;
   background:
-    radial-gradient(circle at top, rgba(227, 197, 150, 0.32), transparent 32rem),
+    radial-gradient(
+      circle at top,
+      rgba(227, 197, 150, 0.32),
+      transparent 32rem
+    ),
     linear-gradient(180deg, #f7f1e5 0%, #f3ede1 50%, #ebe4d6 100%);
   font-family: "Avenir Next", "Segoe UI", sans-serif;
   line-height: 1.5;
@@ -466,8 +470,6 @@ a {
 
 .dialog-shell,
 .confirm-shell {
-  width: min(1040px, 100%);
-  max-height: min(86dvh, 920px);
   border: 1px solid rgba(16, 33, 39, 0.1);
   border-radius: 26px;
   background: rgba(255, 252, 245, 0.98);
@@ -475,20 +477,32 @@ a {
 }
 
 .dialog-shell {
+  width: min(var(--dialog-width, 1040px), 100%);
+  height: min(var(--dialog-height, 820px), 86dvh);
+  max-height: min(var(--dialog-height, 820px), 86dvh);
   display: flex;
   flex-direction: column;
   overflow: hidden;
   overscroll-behavior: contain;
 }
 
+.picker-shell {
+  --dialog-width: 1040px;
+  --dialog-height: 820px;
+}
+
 .settings-shell {
-  width: min(760px, 100%);
-  height: 760px;
+  --dialog-width: 760px;
+  --dialog-height: 760px;
 }
 
 @media (max-width: 768px) {
+  .picker-shell {
+    --dialog-height: 90dvh;
+  }
+
   .settings-shell {
-    height: 86dvh;
+    --dialog-height: 90dvh;
   }
 }
 
@@ -1388,12 +1402,13 @@ a {
   }
 
   .dialog-shell {
-    max-height: min(90dvh, 920px);
+    height: 90dvh;
+    max-height: 90dvh;
     border-radius: 26px 26px 0 0;
   }
 
   .dialog-content {
-    max-height: calc(90dvh - 180px);
+    max-height: none;
   }
 }
 
