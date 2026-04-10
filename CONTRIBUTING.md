@@ -1,34 +1,61 @@
-# 🤝 Contributing to Browser LLM Chat
+# Contributing to Browser LLM Chat
 
-We're delighted you're interested in contributing to **Browser LLM Chat**! This project aims to make high-quality AI accessible to everyone via the browser.
+## Setup
 
-## How to Help
+Use Node `22.x`, then install dependencies:
 
-### 🐛 Bug Reports
-If you find a bug, please open an issue with:
-- A clear description of the problem.
-- Your browser and OS version.
-- Steps to reproduce.
+```bash
+npm install
+```
 
-### ✨ Feature Requests
-We'd love to hear your ideas! If you have a feature in mind, feel free to open a discussion or a pull request.
+Run the app locally with:
 
-### 💻 Code Contributions
-1. **Fork** the repository and create your branch from `main`.
-2. **Install** dependencies: `npm install`.
-3. **Run** the development server: `npm run dev`.
-4. **Build** to check for errors: `npm run build`.
-5. **Commit** your changes with clear, descriptive messages.
-6. **Submit** a pull request!
+```bash
+npm run dev
+```
 
----
+## Required Checks
 
-## Technical Standards
-- **Local-First**: We never send user data to a backend.
-- **Modern UI**: Keep changes consistent with our **glassmorphic** theme.
-- **Web Workers**: Always perform expensive tasks in a worker context.
-- **TypeScript**: New code must be fully typed.
+Before opening a pull request, run:
 
----
+```bash
+npm run check
+```
 
-Happy contributing! ❤️
+That command validates linting, type safety, tests, and the production build.
+
+## Working Rules
+
+- Keep the app local-first. Do not add backend inference calls.
+- Keep expensive inference, summarization, and model work inside the worker layer.
+- Preserve the current SPA structure. Do not add router-driven page navigation unless explicitly scoped.
+- Keep new code fully typed.
+- Prefer small focused modules and hooks over growing monolith files.
+- Reuse shared helpers for storage, dialog behavior, and model logic instead of duplicating patterns.
+
+## Coding Standards
+
+- ESLint is the source of truth for lint rules.
+- Prettier is the source of truth for formatting.
+- Prefer type-only imports where possible.
+- Add tests for extracted pure logic and regressions when refactoring behavior-heavy code.
+
+## Suggested Workflow
+
+1. Create a branch from `main`.
+2. Make focused changes with clear commit scope.
+3. Run `npm run check`.
+4. Update docs when contributor behavior, scripts, or architecture expectations change.
+5. Open a pull request with a concise summary and validation notes.
+
+## Architecture Boundaries
+
+- `src/App.tsx`: app composition and screen orchestration
+- `src/store/`: shared app state
+- `src/components/`: presentational UI
+- `src/hooks/`: reusable React behavior
+- `src/worker/`: model runtime domains
+- `src/chat-store.ts` and `src/storage.ts`: persistence concerns
+- `src/test/`: shared test coverage for app and worker logic
+
+Keep responsibilities aligned with those boundaries when adding new code.

@@ -1,10 +1,19 @@
 import { inferParameterInfo } from "./compatibility";
 import { formatBytes } from "./format";
-import type { DeviceCapabilities, Dtype, ModelDescriptor, SearchFilters } from "./types";
+import type {
+  DeviceCapabilities,
+  Dtype,
+  ModelDescriptor,
+  SearchFilters,
+} from "./types";
 
 const HF_API_URL = "https://huggingface.co/api/models";
 const searchCache = new Map<string, ModelDescriptor[]>();
-const TRUSTED_PUBLISHERS = new Set(["onnx-community", "HuggingFaceTB", "Xenova"]);
+const TRUSTED_PUBLISHERS = new Set([
+  "onnx-community",
+  "HuggingFaceTB",
+  "Xenova",
+]);
 const SEARCH_STOP_WORDS = new Set([
   "a",
   "and",
@@ -96,7 +105,11 @@ const toTitle = (value: string) =>
     .replace(/[-_]/g, " ")
     .replace(/\b\w/g, (character) => character.toUpperCase());
 
-const createSearchCacheKey = (query: string, filters: SearchFilters, device: DeviceCapabilities) =>
+const createSearchCacheKey = (
+  query: string,
+  filters: SearchFilters,
+  device: DeviceCapabilities,
+) =>
   JSON.stringify({
     query: query.trim().toLowerCase(),
     mobileSafe: filters.mobileSafe,
@@ -105,7 +118,7 @@ const createSearchCacheKey = (query: string, filters: SearchFilters, device: Dev
     deviceTier: device.tier,
   });
 
-const normalizeSearchQuery = (query: string) =>
+export const normalizeSearchQuery = (query: string) =>
   query
     .toLowerCase()
     .replace(/[-_]/g, " ")
@@ -113,13 +126,13 @@ const normalizeSearchQuery = (query: string) =>
     .replace(/\s+/g, " ")
     .trim();
 
-const tokenizeSearchQuery = (query: string) =>
+export const tokenizeSearchQuery = (query: string) =>
   normalizeSearchQuery(query)
     .split(" ")
     .filter((token) => token && !SEARCH_STOP_WORDS.has(token))
     .map((token) => FAMILY_ALIASES[token] ?? token);
 
-const buildSearchTerms = (query: string) => {
+export const buildSearchTerms = (query: string) => {
   const trimmedQuery = query.trim();
   const tokens = tokenizeSearchQuery(trimmedQuery);
   const terms = new Set<string>();
@@ -159,14 +172,17 @@ const summarizeSearchModel = (repoName: string, tags: string[]) => {
   return "Chat-ready model candidate for browser inference.";
 };
 
-const uniqueModelsById = (models: ModelDescriptor[]) =>
-  [...new Map(models.map((model) => [model.id, model])).values()];
+const uniqueModelsById = (models: ModelDescriptor[]) => [
+  ...new Map(models.map((model) => [model.id, model])).values(),
+];
 
-const scoreSearchModel = (model: ModelDescriptor, rawQuery: string) => {
+export const scoreSearchModel = (model: ModelDescriptor, rawQuery: string) => {
   const normalizedQuery = normalizeSearchQuery(rawQuery);
   const tokens = tokenizeSearchQuery(rawQuery);
   const haystack = normalizeSearchQuery(
-    [model.id, model.label, model.publisher, model.hf.baseModel].filter(Boolean).join(" "),
+    [model.id, model.label, model.publisher, model.hf.baseModel]
+      .filter(Boolean)
+      .join(" "),
   );
 
   let score = 0;
@@ -183,7 +199,10 @@ const scoreSearchModel = (model: ModelDescriptor, rawQuery: string) => {
     score += 40;
   }
 
-  if (model.hf.libraryName === "transformers.js" || model.hf.tags.includes("transformers.js")) {
+  if (
+    model.hf.libraryName === "transformers.js" ||
+    model.hf.tags.includes("transformers.js")
+  ) {
     score += 35;
   }
 
@@ -215,19 +234,34 @@ const fetchSearchPage = async (term: string) => {
 
   const response = await fetch(`${HF_API_URL}?${params.toString()}`);
   if (!response.ok) {
-    throw new Error("Unable to search compatible Hugging Face models right now.");
+    throw new Error(
+      "Unable to search compatible Hugging Face models right now.",
+    );
   }
 
   return (await response.json()) as SearchResponseModel[];
 };
 
 const inferTextRuntime = (siblings?: Array<{ rfilename: string }>) => {
-  const siblingFiles = new Set((siblings ?? []).map((entry) => entry.rfilename));
+  const siblingFiles = new Set(
+    (siblings ?? []).map((entry) => entry.rfilename),
+  );
   const hasFile = (file: string) => siblingFiles.has(file);
-  const dtypeCandidates: Dtype[] = ["q4f16", "q4", "int8", "uint8", "fp16", "fp32"];
+  const dtypeCandidates: Dtype[] = [
+    "q4f16",
+    "q4",
+    "int8",
+    "uint8",
+    "fp16",
+    "fp32",
+  ];
   const dtypeToFile: Record<Dtype, string[]> = {
     q4f16: ["onnx/model_q4f16.onnx"],
-    q4: ["onnx/model_q4.onnx", "onnx/model_bnb4.onnx", "onnx/model_quantized.onnx"],
+    q4: [
+      "onnx/model_q4.onnx",
+      "onnx/model_bnb4.onnx",
+      "onnx/model_quantized.onnx",
+    ],
     q8: [],
     int8: ["onnx/model_int8.onnx"],
     uint8: ["onnx/model_uint8.onnx"],
@@ -303,7 +337,9 @@ const normalizeSearchModel = (item: SearchResponseModel): ModelDescriptor => {
   };
 };
 
-const normalizeDetailsModel = (details: ModelDetailsResponse): ModelDescriptor =>
+const normalizeDetailsModel = (
+  details: ModelDetailsResponse,
+): ModelDescriptor =>
   normalizeSearchModel({
     id: details.id,
     author: details.author,
@@ -337,13 +373,19 @@ export const searchHubModels = async (
     return [];
   }
 
-  const pages = await Promise.all(searchTerms.map((term) => fetchSearchPage(term)));
+  const pages = await Promise.all(
+    searchTerms.map((term) => fetchSearchPage(term)),
+  );
   const remoteModels = uniqueModelsById(pages.flat().map(normalizeSearchModel));
   const rankedCandidates = [...remoteModels].sort(
-    (left, right) => scoreSearchModel(right, trimmedQuery) - scoreSearchModel(left, trimmedQuery),
+    (left, right) =>
+      scoreSearchModel(right, trimmedQuery) -
+      scoreSearchModel(left, trimmedQuery),
   );
 
-  const detailIds = new Set(rankedCandidates.slice(0, DETAIL_ENRICH_LIMIT).map((model) => model.id));
+  const detailIds = new Set(
+    rankedCandidates.slice(0, DETAIL_ENRICH_LIMIT).map((model) => model.id),
+  );
 
   if (REPO_ID_PATTERN.test(trimmedQuery)) {
     detailIds.add(trimmedQuery);
@@ -360,14 +402,27 @@ export const searchHubModels = async (
   );
 
   const detailsMap = new Map<string, ModelDetailsResponse>(
-    detailEntries.filter(Boolean) as Array<readonly [string, ModelDetailsResponse]>,
+    detailEntries.filter(Boolean) as Array<
+      readonly [string, ModelDetailsResponse]
+    >,
   );
 
-  const exactRepoMatch = REPO_ID_PATTERN.test(trimmedQuery) ? trimmedQuery : null;
-  const exactRepoDetails = exactRepoMatch ? detailsMap.get(exactRepoMatch) : undefined;
+  const exactRepoMatch = REPO_ID_PATTERN.test(trimmedQuery)
+    ? trimmedQuery
+    : null;
+  const exactRepoDetails = exactRepoMatch
+    ? detailsMap.get(exactRepoMatch)
+    : undefined;
   const exactRepoCandidate =
-    exactRepoMatch && exactRepoDetails && !rankedCandidates.some((model) => model.id === exactRepoMatch)
-      ? [enrichModelDescriptor(normalizeDetailsModel(exactRepoDetails), exactRepoDetails)]
+    exactRepoMatch &&
+    exactRepoDetails &&
+    !rankedCandidates.some((model) => model.id === exactRepoMatch)
+      ? [
+          enrichModelDescriptor(
+            normalizeDetailsModel(exactRepoDetails),
+            exactRepoDetails,
+          ),
+        ]
       : [];
 
   const models = uniqueModelsById(
@@ -376,7 +431,11 @@ export const searchHubModels = async (
       return details ? enrichModelDescriptor(model, details) : model;
     }),
   )
-    .sort((left, right) => scoreSearchModel(right, trimmedQuery) - scoreSearchModel(left, trimmedQuery))
+    .sort(
+      (left, right) =>
+        scoreSearchModel(right, trimmedQuery) -
+        scoreSearchModel(left, trimmedQuery),
+    )
     .slice(0, SEARCH_RESULT_LIMIT);
 
   searchCache.set(cacheKey, models);
@@ -396,16 +455,22 @@ export const enrichModelDescriptor = (
   model: ModelDescriptor,
   details: ModelDetailsResponse,
 ): ModelDescriptor => {
-  const baseModel = toArray(details.cardData?.base_model)[0] ?? model.hf.baseModel;
+  const baseModel =
+    toArray(details.cardData?.base_model)[0] ?? model.hf.baseModel;
   const parameterInfo = inferParameterInfo(model.id, baseModel, model.label);
   const runtimeInfo = inferTextRuntime(details.siblings);
   const usedStorageLabel = formatBytes(details.usedStorage);
 
   return {
     ...model,
-    paramsLabel: model.paramsLabel === "Unknown size" ? parameterInfo.paramsLabel : model.paramsLabel,
+    paramsLabel:
+      model.paramsLabel === "Unknown size"
+        ? parameterInfo.paramsLabel
+        : model.paramsLabel,
     parameterTier:
-      model.parameterTier === "unknown" ? parameterInfo.parameterTier : model.parameterTier,
+      model.parameterTier === "unknown"
+        ? parameterInfo.parameterTier
+        : model.parameterTier,
     estimatedDownloadLabel:
       usedStorageLabel && details.usedStorage
         ? `Repo storage ${usedStorageLabel}`

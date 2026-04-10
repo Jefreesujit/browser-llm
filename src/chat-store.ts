@@ -1,13 +1,16 @@
 import {
   clearLegacyChatThreads,
   loadLegacyChatThreads,
+  readJson,
+  removeValue,
+  writeJson,
 } from "./storage";
 import type {
   ChatMessage,
+  ChatPersistenceStatus,
   ChatStore,
   ChatStoreSnapshot,
   ChatThread,
-  ChatPersistenceStatus,
   ModelDescriptor,
   StorageWriteResult,
   ThreadMessage,
@@ -34,48 +37,82 @@ type LegacyChatThread = {
 };
 
 const sortThreadsByUpdatedAt = (threads: ChatThread[]) =>
-  [...threads].sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt));
+  [...threads].sort(
+    (left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt),
+  );
 
-const readJson = <T>(key: string, fallback: T) => {
-  if (typeof window === "undefined") {
-    return fallback;
+const getLastMessagePreview = (
+  message: ChatMessage | ThreadMessage | undefined,
+) => {
+  if (!message) {
+    return null;
   }
 
-  try {
-    const rawValue = window.localStorage.getItem(key);
-    return rawValue ? (JSON.parse(rawValue) as T) : fallback;
-  } catch {
-    return fallback;
+  if (message.content.trim().length > 0) {
+    const normalized = message.content.replace(/\s+/g, " ").trim();
+    return normalized.length > 72
+      ? `${normalized.slice(0, 72).trimEnd()}…`
+      : normalized;
   }
+
+  if (message.attachment) {
+    return `Image · ${message.attachment.name}`;
+  }
+
+  return null;
 };
 
-const writeJson = (key: string, value: unknown): StorageWriteResult => {
-  if (typeof window === "undefined") {
-    return { ok: false, reason: "unavailable" };
-  }
+const toThreadMeta = (
+  legacyThread: LegacyChatThread,
+  messages: ThreadMessage[],
+): ChatThread => ({
+  id: legacyThread.id,
+  title: legacyThread.title,
+  model: legacyThread.model,
+  createdAt: legacyThread.createdAt,
+  updatedAt: legacyThread.updatedAt,
+  lastMessagePreview: getLastMessagePreview(messages.at(-1)),
+  messageCount: messages.length,
+  memorySummary: null,
+  summaryUpToSequence: 0,
+});
 
-  try {
-    window.localStorage.setItem(key, JSON.stringify(value));
+const migrateLegacyMessages = (thread: LegacyChatThread): ThreadMessage[] =>
+  (thread.messages ?? []).map((message, index) => ({
+    ...message,
+    threadId: thread.id,
+    sequence: index + 1,
+    createdAt: thread.updatedAt,
+    status: "complete",
+  }));
+
+const maybeMigrateLegacyThreads = async (
+  store: ChatStore,
+): Promise<StorageWriteResult> => {
+  const existingThreads = await store.listThreads();
+  if (existingThreads.length > 0) {
     return { ok: true };
-  } catch (error) {
-    return {
-      ok: false,
-      reason: error instanceof DOMException && error.name === "QuotaExceededError" ? "quota" : "unavailable",
-    };
-  }
-};
-
-const removeValue = (key: string): StorageWriteResult => {
-  if (typeof window === "undefined") {
-    return { ok: false, reason: "unavailable" };
   }
 
-  try {
-    window.localStorage.removeItem(key);
+  const legacyThreads =
+    loadLegacyChatThreads() as unknown as LegacyChatThread[];
+  if (legacyThreads.length === 0) {
     return { ok: true };
-  } catch {
-    return { ok: false, reason: "unavailable" };
   }
+
+  for (const legacyThread of legacyThreads) {
+    const messages = migrateLegacyMessages(legacyThread);
+    const meta = toThreadMeta(legacyThread, messages);
+    const threadResult = await store.putThread(meta);
+    const messagesResult = await store.putMessages(meta.id, messages);
+
+    if (!threadResult.ok || !messagesResult.ok) {
+      return !threadResult.ok ? threadResult : messagesResult;
+    }
+  }
+
+  clearLegacyChatThreads();
+  return { ok: true };
 };
 
 const getStorageWriteFailure = (error: unknown): StorageWriteResult => {
@@ -100,58 +137,20 @@ const isFallbackEligibleError = (error: unknown) =>
     ? error.name === "SecurityError" || error.name === "InvalidStateError"
     : error instanceof Error && error.message === "indexeddb-unavailable";
 
-const toPreview = (message: ChatMessage | ThreadMessage | undefined) => {
-  if (!message) {
-    return null;
-  }
-
-  if (message.content.trim().length > 0) {
-    const normalized = message.content.replace(/\s+/g, " ").trim();
-    return normalized.length > 72 ? `${normalized.slice(0, 72).trimEnd()}…` : normalized;
-  }
-
-  if (message.attachment) {
-    return `Image · ${message.attachment.name}`;
-  }
-
-  return null;
-};
-
-const toThreadMeta = (
-  legacyThread: LegacyChatThread,
-  messages: ThreadMessage[],
-): ChatThread => ({
-  id: legacyThread.id,
-  title: legacyThread.title,
-  model: legacyThread.model,
-  createdAt: legacyThread.createdAt,
-  updatedAt: legacyThread.updatedAt,
-  lastMessagePreview: toPreview(messages.at(-1)),
-  messageCount: messages.length,
-  memorySummary: null,
-  summaryUpToSequence: 0,
-});
-
-const migrateLegacyMessages = (thread: LegacyChatThread): ThreadMessage[] =>
-  (thread.messages ?? []).map((message, index) => ({
-    ...message,
-    threadId: thread.id,
-    sequence: index + 1,
-    createdAt: thread.updatedAt,
-    status: "complete",
-  }));
-
 const requestToPromise = <T>(request: IDBRequest<T>) =>
   new Promise<T>((resolve, reject) => {
     request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error ?? new Error("IndexedDB request failed."));
+    request.onerror = () =>
+      reject(request.error ?? new Error("IndexedDB request failed."));
   });
 
 const transactionDone = (transaction: IDBTransaction) =>
   new Promise<void>((resolve, reject) => {
     transaction.oncomplete = () => resolve();
-    transaction.onerror = () => reject(transaction.error ?? new Error("IndexedDB transaction failed."));
-    transaction.onabort = () => reject(transaction.error ?? new Error("IndexedDB transaction aborted."));
+    transaction.onerror = () =>
+      reject(transaction.error ?? new Error("IndexedDB transaction failed."));
+    transaction.onabort = () =>
+      reject(transaction.error ?? new Error("IndexedDB transaction aborted."));
   });
 
 const openDatabase = () =>
@@ -171,8 +170,12 @@ const openDatabase = () =>
       }
 
       if (!database.objectStoreNames.contains(MESSAGES_STORE)) {
-        const messageStore = database.createObjectStore(MESSAGES_STORE, { keyPath: "id" });
-        messageStore.createIndex("byThreadSequence", ["threadId", "sequence"], { unique: false });
+        const messageStore = database.createObjectStore(MESSAGES_STORE, {
+          keyPath: "id",
+        });
+        messageStore.createIndex("byThreadSequence", ["threadId", "sequence"], {
+          unique: false,
+        });
       }
 
       if (!database.objectStoreNames.contains(THREAD_UI_STORE)) {
@@ -181,8 +184,10 @@ const openDatabase = () =>
     };
 
     request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error ?? new Error("Unable to open IndexedDB."));
-    request.onblocked = () => reject(new DOMException("IndexedDB blocked", "InvalidStateError"));
+    request.onerror = () =>
+      reject(request.error ?? new Error("Unable to open IndexedDB."));
+    request.onblocked = () =>
+      reject(new DOMException("IndexedDB blocked", "InvalidStateError"));
   });
 
 const getAllMessagesForThread = async (
@@ -192,7 +197,10 @@ const getAllMessagesForThread = async (
   const transaction = database.transaction(MESSAGES_STORE, "readonly");
   const store = transaction.objectStore(MESSAGES_STORE);
   const index = store.index("byThreadSequence");
-  const range = IDBKeyRange.bound([threadId, 0], [threadId, Number.MAX_SAFE_INTEGER]);
+  const range = IDBKeyRange.bound(
+    [threadId, 0],
+    [threadId, Number.MAX_SAFE_INTEGER],
+  );
   const request = index.getAll(range);
   const messages = await requestToPromise(request);
   await transactionDone(transaction);
@@ -211,11 +219,18 @@ const createIndexedDbStore = async (): Promise<ChatStore> => {
   };
 
   const getSnapshot = async (threadId: string) => {
-    const transaction = database.transaction([THREADS_STORE, THREAD_UI_STORE], "readonly");
+    const transaction = database.transaction(
+      [THREADS_STORE, THREAD_UI_STORE],
+      "readonly",
+    );
     const threadsStore = transaction.objectStore(THREADS_STORE);
     const uiStore = transaction.objectStore(THREAD_UI_STORE);
-    const thread = (await requestToPromise(threadsStore.get(threadId))) as ChatThread | undefined;
-    const uiState = (await requestToPromise(uiStore.get(threadId))) as ThreadUiState | undefined;
+    const thread = (await requestToPromise(threadsStore.get(threadId))) as
+      | ChatThread
+      | undefined;
+    const uiState = (await requestToPromise(uiStore.get(threadId))) as
+      | ThreadUiState
+      | undefined;
     await transactionDone(transaction);
 
     if (!thread) {
@@ -223,7 +238,11 @@ const createIndexedDbStore = async (): Promise<ChatStore> => {
     }
 
     const messages = await getAllMessagesForThread(database, threadId);
-    return { thread, messages, uiState: uiState ?? null } satisfies ChatStoreSnapshot;
+    return {
+      thread,
+      messages,
+      uiState: uiState ?? null,
+    } satisfies ChatStoreSnapshot;
   };
 
   const putThread = async (thread: ChatThread) => {
@@ -242,7 +261,10 @@ const createIndexedDbStore = async (): Promise<ChatStore> => {
       const transaction = database.transaction(MESSAGES_STORE, "readwrite");
       const store = transaction.objectStore(MESSAGES_STORE);
       const index = store.index("byThreadSequence");
-      const range = IDBKeyRange.bound([threadId, 0], [threadId, Number.MAX_SAFE_INTEGER]);
+      const range = IDBKeyRange.bound(
+        [threadId, 0],
+        [threadId, Number.MAX_SAFE_INTEGER],
+      );
 
       await new Promise<void>((resolve, reject) => {
         const request = index.openKeyCursor(range);
@@ -256,7 +278,10 @@ const createIndexedDbStore = async (): Promise<ChatStore> => {
           store.delete(cursor.primaryKey);
           cursor.continue();
         };
-        request.onerror = () => reject(request.error ?? new Error("Unable to replace thread messages."));
+        request.onerror = () =>
+          reject(
+            request.error ?? new Error("Unable to replace thread messages."),
+          );
       });
 
       messages.forEach((message) => {
@@ -292,7 +317,10 @@ const createIndexedDbStore = async (): Promise<ChatStore> => {
 
       const messagesStore = transaction.objectStore(MESSAGES_STORE);
       const index = messagesStore.index("byThreadSequence");
-      const range = IDBKeyRange.bound([threadId, 0], [threadId, Number.MAX_SAFE_INTEGER]);
+      const range = IDBKeyRange.bound(
+        [threadId, 0],
+        [threadId, Number.MAX_SAFE_INTEGER],
+      );
 
       await new Promise<void>((resolve, reject) => {
         const request = index.openKeyCursor(range);
@@ -306,7 +334,10 @@ const createIndexedDbStore = async (): Promise<ChatStore> => {
           messagesStore.delete(cursor.primaryKey);
           cursor.continue();
         };
-        request.onerror = () => reject(request.error ?? new Error("Unable to delete thread messages."));
+        request.onerror = () =>
+          reject(
+            request.error ?? new Error("Unable to delete thread messages."),
+          );
       });
 
       await transactionDone(transaction);
@@ -346,12 +377,17 @@ const createIndexedDbStore = async (): Promise<ChatStore> => {
 
 const createLocalStorageStore = (): ChatStore => {
   const readThreads = () => readJson<ChatThread[]>(LOCAL_THREADS_KEY, []);
-  const readMessages = () => readJson<Record<string, ThreadMessage[]>>(LOCAL_MESSAGES_KEY, {});
-  const readUiStates = () => readJson<Record<string, ThreadUiState>>(LOCAL_UI_KEY, {});
+  const readMessages = () =>
+    readJson<Record<string, ThreadMessage[]>>(LOCAL_MESSAGES_KEY, {});
+  const readUiStates = () =>
+    readJson<Record<string, ThreadUiState>>(LOCAL_UI_KEY, {});
 
-  const writeThreads = (threads: ChatThread[]) => writeJson(LOCAL_THREADS_KEY, threads);
-  const writeMessages = (messages: Record<string, ThreadMessage[]>) => writeJson(LOCAL_MESSAGES_KEY, messages);
-  const writeUiStates = (uiStates: Record<string, ThreadUiState>) => writeJson(LOCAL_UI_KEY, uiStates);
+  const writeThreads = (threads: ChatThread[]) =>
+    writeJson(LOCAL_THREADS_KEY, threads);
+  const writeMessages = (messages: Record<string, ThreadMessage[]>) =>
+    writeJson(LOCAL_MESSAGES_KEY, messages);
+  const writeUiStates = (uiStates: Record<string, ThreadUiState>) =>
+    writeJson(LOCAL_UI_KEY, uiStates);
 
   return {
     kind: "localstorage",
@@ -389,7 +425,9 @@ const createLocalStorageStore = (): ChatStore => {
       return writeUiStates(next);
     },
     deleteThread: async (threadId: string) => {
-      const threadResult = writeThreads(readThreads().filter((entry) => entry.id !== threadId));
+      const threadResult = writeThreads(
+        readThreads().filter((entry) => entry.id !== threadId),
+      );
       const messages = readMessages();
       delete messages[threadId];
       const messagesResult = writeMessages(messages);
@@ -413,12 +451,17 @@ const createLocalStorageStore = (): ChatStore => {
       ];
       return results.every((result) => result.ok)
         ? ({ ok: true } satisfies StorageWriteResult)
-        : results.find((result) => !result.ok) ?? { ok: false, reason: "unavailable" };
+        : (results.find((result) => !result.ok) ?? {
+            ok: false,
+            reason: "unavailable",
+          });
     },
   };
 };
 
-const createUnavailableStore = (reason: StorageWriteResult["reason"]): ChatStore => ({
+const createUnavailableStore = (
+  reason: StorageWriteResult["reason"],
+): ChatStore => ({
   kind: "indexeddb",
   listThreads: async () => [],
   getSnapshot: async () => null,
@@ -428,32 +471,6 @@ const createUnavailableStore = (reason: StorageWriteResult["reason"]): ChatStore
   deleteThread: async () => ({ ok: false, reason }),
   clearAll: async () => ({ ok: false, reason }),
 });
-
-const maybeMigrateLegacyThreads = async (store: ChatStore): Promise<StorageWriteResult> => {
-  const existingThreads = await store.listThreads();
-  if (existingThreads.length > 0) {
-    return { ok: true };
-  }
-
-  const legacyThreads = loadLegacyChatThreads() as unknown as LegacyChatThread[];
-  if (legacyThreads.length === 0) {
-    return { ok: true };
-  }
-
-  for (const legacyThread of legacyThreads) {
-    const messages = migrateLegacyMessages(legacyThread);
-    const meta = toThreadMeta(legacyThread, messages);
-    const threadResult = await store.putThread(meta);
-    const messagesResult = await store.putMessages(meta.id, messages);
-
-    if (!threadResult.ok || !messagesResult.ok) {
-      return !threadResult.ok ? threadResult : messagesResult;
-    }
-  }
-
-  clearLegacyChatThreads();
-  return { ok: true };
-};
 
 export const initializeChatStore = async (): Promise<{
   store: ChatStore;
@@ -472,11 +489,17 @@ export const initializeChatStore = async (): Promise<{
     };
   } catch (error) {
     if (isQuotaExceededError(error)) {
-      return { store: createUnavailableStore("quota"), status: "quota_exceeded" };
+      return {
+        store: createUnavailableStore("quota"),
+        status: "quota_exceeded",
+      };
     }
 
     if (!isFallbackEligibleError(error)) {
-      return { store: createUnavailableStore("unavailable"), status: "unavailable" };
+      return {
+        store: createUnavailableStore("unavailable"),
+        status: "unavailable",
+      };
     }
 
     const fallbackStore = createLocalStorageStore();
@@ -487,7 +510,8 @@ export const initializeChatStore = async (): Promise<{
           migrationResult.reason === "quota"
             ? createUnavailableStore("quota")
             : createUnavailableStore("unavailable"),
-        status: migrationResult.reason === "quota" ? "quota_exceeded" : "unavailable",
+        status:
+          migrationResult.reason === "quota" ? "quota_exceeded" : "unavailable",
       };
     }
 

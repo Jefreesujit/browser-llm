@@ -1,5 +1,6 @@
 import type {
   AppSettings,
+  ChatPersistenceStatus,
   ChatThread,
   LocalModelVerdictCache,
   LocalModelVerdictEntry,
@@ -19,7 +20,12 @@ const APP_SETTINGS_KEY = "webllm:app-settings";
 
 const LEGACY_CHAT_THREADS_KEY = "webllm:chat-threads";
 
-const readJson = <T>(key: string, fallback: T) => {
+export type StorageFeedback = {
+  status: ChatPersistenceStatus;
+  warning: string | null;
+};
+
+export const readJson = <T>(key: string, fallback: T) => {
   if (typeof window === "undefined") {
     return fallback;
   }
@@ -32,7 +38,7 @@ const readJson = <T>(key: string, fallback: T) => {
   }
 };
 
-const writeJson = (key: string, value: unknown): StorageWriteResult => {
+export const writeJson = (key: string, value: unknown): StorageWriteResult => {
   if (typeof window === "undefined") {
     return { ok: false, reason: "unavailable" };
   }
@@ -40,12 +46,18 @@ const writeJson = (key: string, value: unknown): StorageWriteResult => {
   try {
     window.localStorage.setItem(key, JSON.stringify(value));
     return { ok: true };
-  } catch {
-    return { ok: false, reason: "quota" };
+  } catch (error) {
+    return {
+      ok: false,
+      reason:
+        error instanceof DOMException && error.name === "QuotaExceededError"
+          ? "quota"
+          : "unavailable",
+    };
   }
 };
 
-const removeValue = (key: string): StorageWriteResult => {
+export const removeValue = (key: string): StorageWriteResult => {
   if (typeof window === "undefined") {
     return { ok: false, reason: "unavailable" };
   }
@@ -58,25 +70,81 @@ const removeValue = (key: string): StorageWriteResult => {
   }
 };
 
-export const loadLastModel = () => readJson<ModelDescriptor | null>(LAST_MODEL_KEY, null);
-export const saveLastModel = (model: ModelDescriptor) => writeJson(LAST_MODEL_KEY, model);
+export const getDefaultStorageMessage = (status: ChatPersistenceStatus) => {
+  switch (status) {
+    case "fallback_local_storage":
+      return "Chat history is using local storage fallback in this browser.";
+    case "quota_exceeded":
+      return "Browser storage is full. Delete some chats or downloaded models.";
+    case "unavailable":
+      return "Chat persistence is unavailable in this browser session.";
+    default:
+      return null;
+  }
+};
+
+export const deriveStorageFeedback = (
+  results: StorageWriteResult[],
+  storeKind: "indexeddb" | "localstorage" | null | undefined,
+): StorageFeedback => {
+  const firstFailure = results.find((result) => !result.ok);
+
+  if (!firstFailure) {
+    const status: ChatPersistenceStatus =
+      storeKind === "localstorage" ? "fallback_local_storage" : "ready";
+
+    return {
+      status,
+      warning: getDefaultStorageMessage(status),
+    };
+  }
+
+  if (firstFailure.reason === "quota") {
+    return {
+      status: "quota_exceeded",
+      warning:
+        "Browser storage is full. Delete some chats or downloaded models.",
+    };
+  }
+
+  return {
+    status: "unavailable",
+    warning:
+      firstFailure.reason === "blocked"
+        ? "Browser storage is blocked in this session."
+        : "Unable to save chat changes in this browser session.",
+  };
+};
+
+export const loadLastModel = () =>
+  readJson<ModelDescriptor | null>(LAST_MODEL_KEY, null);
+export const saveLastModel = (model: ModelDescriptor) =>
+  writeJson(LAST_MODEL_KEY, model);
 export const clearLastModel = () => removeValue(LAST_MODEL_KEY);
 
-export const loadRecentModels = () => readJson<ModelDescriptor[]>(RECENT_MODELS_KEY, []);
-export const saveRecentModels = (models: ModelDescriptor[]) => writeJson(RECENT_MODELS_KEY, models);
+export const loadRecentModels = () =>
+  readJson<ModelDescriptor[]>(RECENT_MODELS_KEY, []);
+export const saveRecentModels = (models: ModelDescriptor[]) =>
+  writeJson(RECENT_MODELS_KEY, models);
 export const clearRecentModels = () => removeValue(RECENT_MODELS_KEY);
 
 export const pushRecentModel = (model: ModelDescriptor) => {
-  const next = [model, ...loadRecentModels().filter((entry) => entry.id !== model.id)].slice(0, 12);
+  const next = [
+    model,
+    ...loadRecentModels().filter((entry) => entry.id !== model.id),
+  ].slice(0, 12);
   saveRecentModels(next);
   return next;
 };
 
-export const loadPickerTab = () => readJson<PickerTab>(PICKER_TAB_KEY, "curated");
+export const loadPickerTab = () =>
+  readJson<PickerTab>(PICKER_TAB_KEY, "curated");
 export const savePickerTab = (tab: PickerTab) => writeJson(PICKER_TAB_KEY, tab);
 
-export const loadShowExperimental = () => readJson<boolean>(SHOW_EXPERIMENTAL_KEY, false);
-export const saveShowExperimental = (value: boolean) => writeJson(SHOW_EXPERIMENTAL_KEY, value);
+export const loadShowExperimental = () =>
+  readJson<boolean>(SHOW_EXPERIMENTAL_KEY, false);
+export const saveShowExperimental = (value: boolean) =>
+  writeJson(SHOW_EXPERIMENTAL_KEY, value);
 
 export const loadModelVerdictCache = () =>
   readJson<LocalModelVerdictCache>(MODEL_VERDICT_CACHE_KEY, {});
@@ -84,9 +152,13 @@ export const loadModelVerdictCache = () =>
 export const saveModelVerdictCache = (cache: LocalModelVerdictCache) =>
   writeJson(MODEL_VERDICT_CACHE_KEY, cache);
 
-export const clearModelVerdictCache = () => removeValue(MODEL_VERDICT_CACHE_KEY);
+export const clearModelVerdictCache = () =>
+  removeValue(MODEL_VERDICT_CACHE_KEY);
 
-export const upsertModelVerdict = (modelId: string, entry: LocalModelVerdictEntry) => {
+export const upsertModelVerdict = (
+  modelId: string,
+  entry: LocalModelVerdictEntry,
+) => {
   const next = {
     ...loadModelVerdictCache(),
     [modelId]: entry,
@@ -95,21 +167,27 @@ export const upsertModelVerdict = (modelId: string, entry: LocalModelVerdictEntr
   return next;
 };
 
-export const loadActiveChatThreadId = () => readJson<string | null>(ACTIVE_CHAT_THREAD_KEY, null);
+export const loadActiveChatThreadId = () =>
+  readJson<string | null>(ACTIVE_CHAT_THREAD_KEY, null);
 
 export const saveActiveChatThreadId = (threadId: string | null) =>
-  threadId ? writeJson(ACTIVE_CHAT_THREAD_KEY, threadId) : removeValue(ACTIVE_CHAT_THREAD_KEY);
+  threadId
+    ? writeJson(ACTIVE_CHAT_THREAD_KEY, threadId)
+    : removeValue(ACTIVE_CHAT_THREAD_KEY);
 
 export const loadAppSettings = (): AppSettings => {
   const stored = readJson<Partial<AppSettings>>(APP_SETTINGS_KEY, {});
   return { ...DEFAULT_APP_SETTINGS, ...stored };
 };
 
-export const saveAppSettings = (settings: AppSettings) => writeJson(APP_SETTINGS_KEY, settings);
+export const saveAppSettings = (settings: AppSettings) =>
+  writeJson(APP_SETTINGS_KEY, settings);
 export const clearAppSettings = () => removeValue(APP_SETTINGS_KEY);
 
-export const loadLegacyChatThreads = () => readJson<ChatThread[]>(LEGACY_CHAT_THREADS_KEY, []);
-export const clearLegacyChatThreads = () => removeValue(LEGACY_CHAT_THREADS_KEY);
+export const loadLegacyChatThreads = () =>
+  readJson<ChatThread[]>(LEGACY_CHAT_THREADS_KEY, []);
+export const clearLegacyChatThreads = () =>
+  removeValue(LEGACY_CHAT_THREADS_KEY);
 
 export const clearLightweightAppState = () => {
   const results = [
