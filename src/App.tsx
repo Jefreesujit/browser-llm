@@ -1,57 +1,120 @@
-import { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import {
+  FormEvent,
+  KeyboardEvent,
+  startTransition,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
-import { DEFAULT_MODEL_MODE, MODEL_DEFINITIONS, MODEL_OPTIONS } from "./models";
-import type { ChatMessage, ModelMode, WorkerRequest, WorkerResponse } from "./types";
+import { initializeChatStore } from "./chat-store";
+import ChatScreen from "./components/ChatScreen";
+import LandingScreen from "./components/LandingScreen";
+import ModelPickerDialog from "./components/ModelPickerDialog";
+import SettingsDialog from "./components/SettingsDialog";
+import { getCompatibilityReport, shouldShowSearchModel } from "./compatibility";
+import { detectDeviceCapabilities } from "./device";
+import { enrichModelDescriptor, fetchHubModelDetails, searchHubModels } from "./hf";
+import {
+  CURATED_CATEGORIES,
+  CURATED_MODELS,
+  HOME_STARTER_MODELS,
+  getCuratedModelsForCategory,
+  searchCatalogModels,
+} from "./models";
+import {
+  clearAppSettings,
+  clearLightweightAppState,
+  loadActiveChatThreadId,
+  loadAppSettings,
+  loadLastModel,
+  loadModelVerdictCache,
+  loadPickerTab,
+  loadRecentModels,
+  loadShowExperimental,
+  pushRecentModel,
+  saveActiveChatThreadId,
+  saveAppSettings,
+  saveLastModel,
+  savePickerTab,
+  saveRecentModels,
+  saveShowExperimental,
+  upsertModelVerdict,
+} from "./storage";
+import type {
+  AppSettings,
+  ChatAttachment,
+  ChatMessage,
+  ChatPersistenceStatus,
+  ChatStore,
+  ChatThread,
+  DeviceCapabilities,
+  GenerationOptions,
+  LocalModelVerdictCache,
+  ModelDescriptor,
+  PickerTab,
+  SearchFilters,
+  StorageWriteResult,
+  ThreadMessage,
+  ThreadUiState,
+  WorkerRequest,
+  WorkerResponse,
+} from "./types";
+import { DEFAULT_APP_SETTINGS } from "./types";
 
+type Screen = "landing" | "chat";
 type AppState = "loading" | "ready";
-
 type ProgressState = {
-  mode: ModelMode;
+  modelId: string;
   file: string;
   progress: number | null;
   loaded: number | null;
   total: number | null;
 } | null;
-
 type DraftAttachment = {
   file: File;
   name: string;
   mimeType: string;
   size: number;
 };
+type GenerationRequestState = {
+  threadId: string;
+  requestId: string;
+  modelId: string;
+};
+
+const DEFAULT_DEVICE_CAPABILITIES: DeviceCapabilities = {
+  hasWebGpu: false,
+  supportsFp16: false,
+  tier: "desktop",
+  browserLabel: "Your browser",
+  userAgent: "",
+};
 
 const THINK_OPEN_TAG = "<think>";
 const THINK_CLOSE_TAG = "</think>";
+const THREAD_FLUSH_DEBOUNCE_MS = 800;
+const UI_STATE_FLUSH_DEBOUNCE_MS = 250;
+const AUTO_SCROLL_BOTTOM_THRESHOLD = 48;
+const SCROLL_STATE_DEBOUNCE_MS = 120;
 
-const formatBytes = (value: number | null) => {
-  if (!value || Number.isNaN(value)) {
-    return null;
-  }
+const computeGenerationOptions = (
+  settings: AppSettings,
+  contextWindowTokens: number,
+): GenerationOptions => {
+  const maxNewTokens =
+    settings.maxTokenMode === "percentage"
+      ? Math.max(64, Math.floor((contextWindowTokens * settings.percentageMaxTokens) / 100))
+      : settings.staticMaxTokens;
 
-  const units = ["B", "KB", "MB", "GB"];
-  let size = value;
-  let unitIndex = 0;
-
-  while (size >= 1024 && unitIndex < units.length - 1) {
-    size /= 1024;
-    unitIndex += 1;
-  }
-
-  return `${size.toFixed(size >= 100 ? 0 : 1)} ${units[unitIndex]}`;
+  return {
+    maxNewTokens: Math.min(Math.max(maxNewTokens, 64), contextWindowTokens),
+    temperature: settings.temperature,
+    topP: settings.topP,
+  };
 };
-
-const createMessage = (
-  role: ChatMessage["role"],
-  content: string,
-  attachment?: ChatMessage["attachment"],
-): ChatMessage => ({
-  id: crypto.randomUUID(),
-  role,
-  content,
-  attachment,
-});
 
 const parseAssistantResponse = (rawContent: string) => {
   const thinkStart = rawContent.indexOf(THINK_OPEN_TAG);
@@ -85,7 +148,7 @@ const parseAssistantResponse = (rawContent: string) => {
   };
 };
 
-const applyAssistantContent = (message: ChatMessage, rawContent: string): ChatMessage => {
+const applyAssistantContent = (message: ThreadMessage, rawContent: string): ThreadMessage => {
   const parsed = parseAssistantResponse(rawContent);
 
   return {
@@ -97,116 +160,628 @@ const applyAssistantContent = (message: ChatMessage, rawContent: string): ChatMe
   };
 };
 
+const uniqueModelsById = (models: ModelDescriptor[]) =>
+  [...new Map(models.map((model) => [model.id, model])).values()];
+
+const sortThreadsByUpdatedAt = (threads: ChatThread[]) =>
+  [...threads].sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt));
+
+const stripModelCompatibility = (model: ModelDescriptor): ModelDescriptor => {
+  const { compatibility: _compatibility, ...rest } = model;
+  return rest;
+};
+
+const buildThreadTitle = (messages: Array<ChatMessage | ThreadMessage>) => {
+  const firstUserText = messages.find(
+    (message) => message.role === "user" && message.content.trim().length > 0,
+  )?.content;
+
+  if (firstUserText) {
+    const normalized = firstUserText.replace(/\s+/g, " ").trim();
+    return normalized.length > 42 ? `${normalized.slice(0, 42).trimEnd()}…` : normalized;
+  }
+
+  const firstAttachment = messages.find((message) => message.attachment)?.attachment;
+  if (firstAttachment) {
+    return `Image chat · ${firstAttachment.name}`;
+  }
+
+  return "New chat";
+};
+
+const buildLastMessagePreview = (messages: ThreadMessage[]) => {
+  const lastMessage = [...messages]
+    .reverse()
+    .find((message) => message.content.trim().length > 0 || message.attachment);
+
+  if (!lastMessage) {
+    return null;
+  }
+
+  if (lastMessage.content.trim().length > 0) {
+    const normalized = lastMessage.content.replace(/\s+/g, " ").trim();
+    return normalized.length > 72 ? `${normalized.slice(0, 72).trimEnd()}…` : normalized;
+  }
+
+  return lastMessage.attachment ? `Image · ${lastMessage.attachment.name}` : null;
+};
+
+const createThreadRecord = (model: ModelDescriptor): ChatThread => {
+  const timestamp = new Date().toISOString();
+
+  return {
+    id: crypto.randomUUID(),
+    title: "New chat",
+    model: stripModelCompatibility(model),
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    lastMessagePreview: null,
+    messageCount: 0,
+    memorySummary: null,
+    summaryUpToSequence: 0,
+  };
+};
+
+const updateThreadFromMessages = (
+  thread: ChatThread,
+  messages: ThreadMessage[],
+  overrides: Partial<ChatThread> = {},
+): ChatThread => ({
+  ...thread,
+  ...overrides,
+  title: buildThreadTitle(messages),
+  lastMessagePreview: buildLastMessagePreview(messages),
+  messageCount: messages.length,
+  updatedAt: overrides.updatedAt ?? new Date().toISOString(),
+});
+
+const createThreadMessage = (
+  threadId: string,
+  sequence: number,
+  role: ThreadMessage["role"],
+  content: string,
+  options?: {
+    attachment?: ChatAttachment;
+    status?: ThreadMessage["status"];
+    requestId?: string;
+  },
+): ThreadMessage => ({
+  id: crypto.randomUUID(),
+  threadId,
+  sequence,
+  role,
+  content,
+  attachment: options?.attachment,
+  createdAt: new Date().toISOString(),
+  status: options?.status ?? "complete",
+  requestId: options?.requestId,
+});
+
+const createDefaultThreadUiState = (threadId: string): ThreadUiState => ({
+  threadId,
+  draftText: "",
+  scrollTop: 0,
+  updatedAt: new Date().toISOString(),
+});
+
+const getDefaultStorageMessage = (status: ChatPersistenceStatus) => {
+  switch (status) {
+    case "fallback_local_storage":
+      return "Chat history is using local storage fallback in this browser.";
+    case "quota_exceeded":
+      return "Browser storage is full. Delete some chats or downloaded models.";
+    case "unavailable":
+      return "Chat persistence is unavailable in this browser session.";
+    default:
+      return null;
+  }
+};
+
 function App() {
   const workerRef = useRef<Worker | null>(null);
-  const chatLogRef = useRef<HTMLElement | null>(null);
+  const selectedModelRef = useRef<ModelDescriptor | null>(null);
+  const generationRequestRef = useRef<GenerationRequestState | null>(null);
+  const chatThreadsRef = useRef<ChatThread[]>([]);
+  const threadMessagesRef = useRef<Record<string, ThreadMessage[]>>({});
+  const activeThreadIdRef = useRef<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const selectedModeRef = useRef<ModelMode>(DEFAULT_MODEL_MODE);
-  const [workerVersion, setWorkerVersion] = useState(0);
-  const [workerReady, setWorkerReady] = useState(false);
-  const [selectedMode, setSelectedMode] = useState<ModelMode>(DEFAULT_MODEL_MODE);
+  const chatLogRef = useRef<HTMLElement | null>(null);
+  const chatStoreRef = useRef<ChatStore | null>(null);
+  const pendingScrollRestoreRef = useRef<number | null>(null);
+  const shouldStickToBottomRef = useRef(true);
+  const pendingScrollStateRef = useRef<{ threadId: string; scrollTop: number } | null>(null);
+  const scrollStateFlushTimerRef = useRef<number | null>(null);
+  const threadFlushTimersRef = useRef<Record<string, number>>({});
+  const pendingThreadFlushRef = useRef<Record<string, { thread: ChatThread; messages: ThreadMessage[] }>>({});
+  const uiStateFlushTimerRef = useRef<number | null>(null);
+  const threadOpenNonceRef = useRef(0);
+
+  const [booting, setBooting] = useState(true);
+  const [screen, setScreen] = useState<Screen>("landing");
   const [appState, setAppState] = useState<AppState>("loading");
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [input, setInput] = useState("");
-  const [draftAttachment, setDraftAttachment] = useState<DraftAttachment | null>(null);
+  const [deviceCapabilities, setDeviceCapabilities] = useState<DeviceCapabilities>(
+    DEFAULT_DEVICE_CAPABILITIES,
+  );
+  const [workerReady, setWorkerReady] = useState(false);
+  const [selectedModel, setSelectedModel] = useState<ModelDescriptor | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState<ProgressState>(null);
-  const [isGenerating, setIsGenerating] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerTab, setPickerTab] = useState<PickerTab>(loadPickerTab());
+  const [pendingModel, setPendingModel] = useState<ModelDescriptor | null>(null);
+  const [loadingModelId, setLoadingModelId] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<ModelDescriptor[]>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [recentModels, setRecentModels] = useState<ModelDescriptor[]>(loadRecentModels());
+  const [localVerdicts, setLocalVerdicts] = useState<LocalModelVerdictCache>(loadModelVerdictCache());
+  const [chatThreads, setChatThreads] = useState<ChatThread[]>([]);
+  const [threadMessages, setThreadMessages] = useState<Record<string, ThreadMessage[]>>({});
+  const [threadUiStates, setThreadUiStates] = useState<Record<string, ThreadUiState>>({});
+  const [activeThreadId, setActiveThreadId] = useState<string | null>(loadActiveChatThreadId());
+  const [draftAttachment, setDraftAttachment] = useState<DraftAttachment | null>(null);
+  const [generationRequest, setGenerationRequest] = useState<GenerationRequestState | null>(null);
+  const [stopRequested, setStopRequested] = useState(false);
+  const [chatStorageWarning, setChatStorageWarning] = useState<string | null>(null);
+  const [chatPersistenceStatus, setChatPersistenceStatus] =
+    useState<ChatPersistenceStatus>("ready");
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [appSettings, setAppSettings] = useState<AppSettings>(loadAppSettings());
+  const [loadedModelId, setLoadedModelId] = useState<string | null>(null);
+  const [searchFilters, setSearchFilters] = useState<SearchFilters>({
+    mobileSafe: deviceCapabilities.tier === "mobile",
+    verifiedOnly: false,
+    showExperimental: loadShowExperimental(),
+  });
 
-  const selectedModel = MODEL_DEFINITIONS[selectedMode];
-  const isVisionMode = selectedModel.kind === "vision";
-  const isWebGpuSupported =
-    typeof navigator !== "undefined" &&
-    "gpu" in navigator &&
-    /(chrome|edg)/i.test(navigator.userAgent);
+  const deferredSearchQuery = useDeferredValue(searchQuery);
+  const isGenerating = generationRequest !== null;
+  const activeThread = useMemo(
+    () => chatThreads.find((thread) => thread.id === activeThreadId) ?? null,
+    [activeThreadId, chatThreads],
+  );
+  const activeMessages = activeThreadId ? threadMessages[activeThreadId] ?? [] : [];
+  const activeInput = activeThreadId ? threadUiStates[activeThreadId]?.draftText ?? "" : "";
 
-  useEffect(() => {
-    selectedModeRef.current = selectedMode;
-  }, [selectedMode]);
-
-  useEffect(() => {
-    if (!isWebGpuSupported) {
+  const handleStorageWriteResults = (...results: StorageWriteResult[]) => {
+    const firstFailure = results.find((result) => !result.ok);
+    if (!firstFailure) {
+      const nextStatus: ChatPersistenceStatus =
+        chatStoreRef.current?.kind === "localstorage" ? "fallback_local_storage" : "ready";
+      setChatPersistenceStatus(nextStatus);
+      setChatStorageWarning(getDefaultStorageMessage(nextStatus));
       return;
     }
 
-    const worker = new Worker(new URL("./model.worker.ts", import.meta.url), {
-      type: "module",
+    if (firstFailure.reason === "quota") {
+      setChatPersistenceStatus("quota_exceeded");
+      setChatStorageWarning("Browser storage is full. Delete some chats or downloaded models.");
+      return;
+    }
+
+    setChatPersistenceStatus("unavailable");
+    setChatStorageWarning(
+      firstFailure.reason === "blocked"
+        ? "Browser storage is blocked in this session."
+        : "Unable to save chat changes in this browser session.",
+    );
+  };
+
+  const flushThreadSnapshot = async (threadId: string) => {
+    const store = chatStoreRef.current;
+    const pending = pendingThreadFlushRef.current[threadId];
+    if (!store || !pending) {
+      return;
+    }
+
+    delete pendingThreadFlushRef.current[threadId];
+    delete threadFlushTimersRef.current[threadId];
+    const threadResult = await store.putThread(pending.thread);
+    const messagesResult = await store.putMessages(threadId, pending.messages);
+    handleStorageWriteResults(threadResult, messagesResult);
+  };
+
+  const scheduleThreadSnapshotPersist = (thread: ChatThread, messages: ThreadMessage[]) => {
+    pendingThreadFlushRef.current[thread.id] = { thread, messages };
+
+    if (threadFlushTimersRef.current[thread.id]) {
+      return;
+    }
+
+    threadFlushTimersRef.current[thread.id] = window.setTimeout(() => {
+      void flushThreadSnapshot(thread.id);
+    }, THREAD_FLUSH_DEBOUNCE_MS);
+  };
+
+  const flushActiveUiState = async () => {
+    const store = chatStoreRef.current;
+    if (!store || !activeThreadId) {
+      return;
+    }
+
+    const currentUiState = threadUiStates[activeThreadId];
+    if (!currentUiState) {
+      return;
+    }
+
+    const result = await store.putUiState(currentUiState);
+    handleStorageWriteResults(result);
+  };
+
+  const persistThreadSnapshotNow = async (thread: ChatThread, messages: ThreadMessage[]) => {
+    const store = chatStoreRef.current;
+    if (!store) {
+      return;
+    }
+
+    const threadResult = await store.putThread(thread);
+    const messagesResult = await store.putMessages(thread.id, messages);
+    handleStorageWriteResults(threadResult, messagesResult);
+  };
+
+  const persistThreadUiStateNow = async (uiState: ThreadUiState) => {
+    const store = chatStoreRef.current;
+    if (!store) {
+      return;
+    }
+
+    const result = await store.putUiState(uiState);
+    handleStorageWriteResults(result);
+  };
+
+  const upsertThreadInState = (thread: ChatThread) => {
+    setChatThreads((current) => {
+      const next = sortThreadsByUpdatedAt([thread, ...current.filter((entry) => entry.id !== thread.id)]);
+      chatThreadsRef.current = next;
+      return next;
     });
+  };
+
+  const replaceThreadMessages = (threadId: string, messages: ThreadMessage[]) => {
+    setThreadMessages((current) => {
+      const next = {
+        ...current,
+        [threadId]: messages,
+      };
+      threadMessagesRef.current = next;
+      return next;
+    });
+  };
+
+  const setThreadUiState = (threadId: string, patch: Partial<ThreadUiState>) => {
+    setThreadUiStates((current) => {
+      const next = {
+        ...(current[threadId] ?? createDefaultThreadUiState(threadId)),
+        ...patch,
+        threadId,
+        updatedAt: new Date().toISOString(),
+      };
+
+      return {
+        ...current,
+        [threadId]: next,
+      };
+    });
+  };
+
+  const clearDraftAttachment = () => {
+    setDraftAttachment(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+  };
+
+  const flushPendingScrollState = () => {
+    const pending = pendingScrollStateRef.current;
+    if (!pending) {
+      return;
+    }
+
+    pendingScrollStateRef.current = null;
+    if (scrollStateFlushTimerRef.current) {
+      window.clearTimeout(scrollStateFlushTimerRef.current);
+      scrollStateFlushTimerRef.current = null;
+    }
+
+    setThreadUiState(pending.threadId, { scrollTop: pending.scrollTop });
+  };
+
+  const loadThreadSnapshot = async (threadId: string) => {
+    const store = chatStoreRef.current;
+    if (!store) {
+      return null;
+    }
+
+    return store.getSnapshot(threadId);
+  };
+
+  const openThread = async (threadId: string) => {
+    const thread = chatThreads.find((entry) => entry.id === threadId);
+    if (!thread) {
+      return;
+    }
+
+    const openNonce = ++threadOpenNonceRef.current;
+    const snapshot = await loadThreadSnapshot(threadId);
+    if (!snapshot || openNonce !== threadOpenNonceRef.current) {
+      return;
+    }
+
+    upsertThreadInState(snapshot.thread);
+    replaceThreadMessages(threadId, snapshot.messages);
+    setThreadUiStates((current) => ({
+      ...current,
+      [threadId]: snapshot.uiState ?? createDefaultThreadUiState(threadId),
+    }));
+    pendingScrollRestoreRef.current = snapshot.uiState?.scrollTop ?? 0;
+    shouldStickToBottomRef.current = (snapshot.uiState?.scrollTop ?? 0) <= 0;
+
+    setActiveThreadId(threadId);
+    activeThreadIdRef.current = threadId;
+    saveActiveChatThreadId(threadId);
+    setScreen("chat");
+    setPickerOpen(false);
+    setPendingModel(null);
+    clearDraftAttachment();
+    setError(null);
+
+    if (!isGenerating && selectedModel?.id !== snapshot.thread.model.id) {
+      setSelectedModel(snapshot.thread.model);
+    }
+  };
+
+  useEffect(() => {
+    detectDeviceCapabilities()
+      .then((capabilities) => {
+        setDeviceCapabilities(capabilities);
+        setSearchFilters((current) => ({
+          ...current,
+          mobileSafe: current.mobileSafe || capabilities.tier === "mobile",
+        }));
+      })
+      .catch(() => {
+        setDeviceCapabilities(DEFAULT_DEVICE_CAPABILITIES);
+      });
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const bootstrap = async () => {
+      const { store, status } = await initializeChatStore();
+      if (cancelled) {
+        return;
+      }
+
+      chatStoreRef.current = store;
+      setChatPersistenceStatus(status);
+      setChatStorageWarning(getDefaultStorageMessage(status));
+
+      const threads = sortThreadsByUpdatedAt(await store.listThreads());
+      if (cancelled) {
+        return;
+      }
+
+      setChatThreads(threads);
+      chatThreadsRef.current = threads;
+
+      const savedActiveThreadId = loadActiveChatThreadId();
+      const nextActiveThread =
+        threads.find((thread) => thread.id === savedActiveThreadId) ?? threads[0] ?? null;
+
+      if (!nextActiveThread) {
+        setScreen("landing");
+        setSelectedModel(null);
+        setBooting(false);
+        return;
+      }
+
+      const snapshot = await store.getSnapshot(nextActiveThread.id);
+      if (cancelled || !snapshot) {
+        return;
+      }
+
+      setThreadMessages({ [snapshot.thread.id]: snapshot.messages });
+      threadMessagesRef.current = { [snapshot.thread.id]: snapshot.messages };
+      setThreadUiStates({
+        [snapshot.thread.id]: snapshot.uiState ?? createDefaultThreadUiState(snapshot.thread.id),
+      });
+      pendingScrollRestoreRef.current = snapshot.uiState?.scrollTop ?? 0;
+      shouldStickToBottomRef.current = (snapshot.uiState?.scrollTop ?? 0) <= 0;
+      setActiveThreadId(snapshot.thread.id);
+      activeThreadIdRef.current = snapshot.thread.id;
+      saveActiveChatThreadId(snapshot.thread.id);
+      setSelectedModel(snapshot.thread.model);
+      setScreen("chat");
+      setBooting(false);
+    };
+
+    void bootstrap();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!deviceCapabilities.hasWebGpu) {
+      return;
+    }
+
+    const worker = new Worker(new URL("./model.worker.ts", import.meta.url), { type: "module" });
 
     const handleWorkerMessage = (event: MessageEvent<WorkerResponse>) => {
+      const currentSelectedModel = selectedModelRef.current;
+      const currentGeneration = generationRequestRef.current;
+
       switch (event.data.type) {
         case "LOAD_PROGRESS": {
-          if (event.data.payload.mode !== selectedModeRef.current) {
+          if (event.data.payload.modelId !== currentSelectedModel?.id) {
             return;
           }
+
           setProgress(event.data.payload);
           break;
         }
         case "MODEL_READY": {
-          if (event.data.payload.mode !== selectedModeRef.current) {
+          if (event.data.payload.modelId !== currentSelectedModel?.id) {
             return;
           }
+
           setAppState("ready");
+          setLoadedModelId(event.data.payload.modelId);
           setError(null);
           setProgress(null);
+          setLoadingModelId(null);
+          break;
+        }
+        case "MODEL_LOAD_RESULT": {
+          if (event.data.payload.modelId !== currentSelectedModel?.id) {
+            return;
+          }
+
+          if (event.data.payload.status === "verified") {
+            const storedModel = stripModelCompatibility(currentSelectedModel);
+            const nextCache = upsertModelVerdict(currentSelectedModel.id, {
+              status: "verified",
+              lastLoadedAt: new Date().toISOString(),
+            });
+            setLocalVerdicts(nextCache);
+            setRecentModels(pushRecentModel(storedModel));
+            saveLastModel(storedModel);
+          } else {
+            setLocalVerdicts(
+              upsertModelVerdict(currentSelectedModel.id, {
+                status: "failed_on_device",
+                lastLoadedAt: new Date().toISOString(),
+              }),
+            );
+          }
           break;
         }
         case "STREAM_TOKEN": {
-          if (event.data.payload.mode !== selectedModeRef.current) {
+          const payload = event.data.payload;
+          if (
+            !currentGeneration ||
+            currentGeneration.threadId !== payload.threadId ||
+            currentGeneration.requestId !== payload.requestId
+          ) {
             return;
           }
-          const { text } = event.data.payload;
-          setMessages((current) => {
-            const next = [...current];
-            const last = next.at(-1);
 
-            if (last?.role !== "assistant") {
+          setThreadMessages((current) => {
+            const existingMessages = current[payload.threadId] ?? [];
+            const nextMessages = [...existingMessages];
+            const last = nextMessages.at(-1);
+            if (!last || last.role !== "assistant" || last.requestId !== payload.requestId) {
               return current;
             }
 
-            const nextRawContent = `${last.rawContent ?? last.content}${text}`;
-            next[next.length - 1] = {
-              ...applyAssistantContent(last, nextRawContent),
+            const nextRawContent = `${last.rawContent ?? last.content}${payload.text}`;
+            nextMessages[nextMessages.length - 1] = applyAssistantContent(last, nextRawContent);
+            const nextState = {
+              ...current,
+              [payload.threadId]: nextMessages,
             };
-            return next;
+            threadMessagesRef.current = nextState;
+
+            const thread = chatThreadsRef.current.find((entry) => entry.id === payload.threadId);
+            if (thread) {
+              scheduleThreadSnapshotPersist(thread, nextMessages);
+            }
+
+            return nextState;
           });
           break;
         }
         case "GENERATION_DONE": {
-          if (event.data.payload.mode !== selectedModeRef.current) {
+          const payload = event.data.payload;
+          if (
+            !currentGeneration ||
+            currentGeneration.threadId !== payload.threadId ||
+            currentGeneration.requestId !== payload.requestId
+          ) {
             return;
           }
-          const { text } = event.data.payload;
-          setMessages((current) => {
-            const next = [...current];
-            const last = next.at(-1);
 
-            if (last?.role !== "assistant") {
-              return current;
-            }
+          const thread = chatThreadsRef.current.find((entry) => entry.id === payload.threadId);
+          if (!thread) {
+            setGenerationRequest(null);
+            return;
+          }
 
-            next[next.length - 1] = applyAssistantContent(last, text);
-            return next;
+          const existingMessages = threadMessagesRef.current[payload.threadId] ?? [];
+          const nextMessages = [...existingMessages];
+          const last = nextMessages.at(-1);
+
+          if (last?.role === "assistant" && last.requestId === payload.requestId) {
+            nextMessages[nextMessages.length - 1] = {
+              ...applyAssistantContent(last, payload.text),
+              status: "complete",
+            };
+          }
+
+          const nextThread = updateThreadFromMessages(thread, nextMessages, {
+            memorySummary: payload.summary,
+            summaryUpToSequence: payload.summaryUpToSequence,
           });
-          setIsGenerating(false);
+
+          replaceThreadMessages(payload.threadId, nextMessages);
+          upsertThreadInState(nextThread);
+          void persistThreadSnapshotNow(nextThread, nextMessages);
+          setGenerationRequest(null);
+          setStopRequested(false);
+          setError(null);
           break;
         }
         case "ERROR": {
-          if (event.data.payload.mode !== selectedModeRef.current) {
-            return;
-          }
-          setMessages((current) => {
-            const last = current.at(-1);
-
-            if (last?.role === "assistant" && last.content.length === 0) {
-              return current.slice(0, -1);
+          const payload = event.data.payload;
+          if (payload.threadId && payload.requestId) {
+            if (
+              !currentGeneration ||
+              currentGeneration.threadId !== payload.threadId ||
+              currentGeneration.requestId !== payload.requestId
+            ) {
+              return;
             }
 
-            return current;
-          });
-          setError(event.data.payload.message);
-          setAppState("loading");
-          setIsGenerating(false);
+            const thread = chatThreadsRef.current.find((entry) => entry.id === payload.threadId);
+            const existingMessages = threadMessagesRef.current[payload.threadId] ?? [];
+            const nextMessages =
+              existingMessages.at(-1)?.role === "assistant" &&
+              existingMessages.at(-1)?.requestId === payload.requestId &&
+              existingMessages.at(-1)?.content.length === 0
+                ? existingMessages.slice(0, -1)
+                : existingMessages;
+
+            if (thread) {
+              const nextThread = updateThreadFromMessages(thread, nextMessages);
+              replaceThreadMessages(payload.threadId, nextMessages);
+              upsertThreadInState(nextThread);
+              void persistThreadSnapshotNow(nextThread, nextMessages);
+            }
+
+            setGenerationRequest(null);
+            setStopRequested(false);
+            if (activeThreadIdRef.current === payload.threadId) {
+              setError(payload.message);
+            }
+            return;
+          }
+
+          if (payload.modelId === currentSelectedModel?.id) {
+            setLocalVerdicts(
+              upsertModelVerdict(currentSelectedModel.id, {
+                status: "failed_on_device",
+                lastLoadedAt: new Date().toISOString(),
+              }),
+            );
+            setLoadedModelId(null);
+            setError(payload.message);
+            setAppState("loading");
+            setLoadingModelId(null);
+          }
           break;
         }
       }
@@ -222,22 +797,89 @@ function App() {
       workerRef.current = null;
       setWorkerReady(false);
     };
-  }, [isWebGpuSupported, workerVersion]);
+  }, [deviceCapabilities.hasWebGpu]);
 
   useEffect(() => {
-    if (!workerReady) {
+    selectedModelRef.current = selectedModel;
+  }, [selectedModel]);
+
+  useEffect(() => {
+    generationRequestRef.current = generationRequest;
+  }, [generationRequest]);
+
+  useEffect(() => {
+    chatThreadsRef.current = chatThreads;
+  }, [chatThreads]);
+
+  useEffect(() => {
+    threadMessagesRef.current = threadMessages;
+  }, [threadMessages]);
+
+  useEffect(() => {
+    activeThreadIdRef.current = activeThreadId;
+  }, [activeThreadId]);
+
+  useEffect(() => {
+    if (!workerReady || !selectedModel || isGenerating) {
+      return;
+    }
+
+    if (loadedModelId === selectedModel.id && appState === "ready") {
+      return;
+    }
+
+    if (loadingModelId === selectedModel.id) {
       return;
     }
 
     setAppState("loading");
     setError(null);
     setProgress(null);
+    setLoadingModelId(selectedModel.id);
 
     workerRef.current?.postMessage({
       type: "LOAD_MODEL",
-      payload: { mode: selectedMode },
+      payload: { model: selectedModel },
     } satisfies WorkerRequest);
-  }, [selectedMode, workerReady]);
+  }, [appState, isGenerating, loadedModelId, loadingModelId, selectedModel, workerReady]);
+
+  useEffect(() => {
+    if (!activeThread || !workerReady || isGenerating) {
+      return;
+    }
+
+    if (selectedModel?.id === activeThread.model.id) {
+      return;
+    }
+
+    setSelectedModel(activeThread.model);
+  }, [activeThread, isGenerating, selectedModel, workerReady]);
+
+  useEffect(() => {
+    if (!activeThreadId) {
+      return;
+    }
+
+    const currentUiState = threadUiStates[activeThreadId];
+    if (!currentUiState) {
+      return;
+    }
+
+    if (uiStateFlushTimerRef.current) {
+      window.clearTimeout(uiStateFlushTimerRef.current);
+    }
+
+    uiStateFlushTimerRef.current = window.setTimeout(() => {
+      void flushActiveUiState();
+    }, UI_STATE_FLUSH_DEBOUNCE_MS);
+
+    return () => {
+      if (uiStateFlushTimerRef.current) {
+        window.clearTimeout(uiStateFlushTimerRef.current);
+        uiStateFlushTimerRef.current = null;
+      }
+    };
+  }, [activeThreadId, threadUiStates]);
 
   useEffect(() => {
     const chatLog = chatLogRef.current;
@@ -245,43 +887,224 @@ function App() {
       return;
     }
 
-    chatLog.scrollTop = chatLog.scrollHeight;
-  }, [messages, progress]);
-
-  const progressLabel = useMemo(() => {
-    if (!progress) {
-      return null;
+    if (pendingScrollRestoreRef.current !== null) {
+      const restoredScrollTop = pendingScrollRestoreRef.current;
+      chatLog.scrollTop = restoredScrollTop;
+      const distanceFromBottom =
+        chatLog.scrollHeight - chatLog.clientHeight - restoredScrollTop;
+      shouldStickToBottomRef.current = distanceFromBottom <= AUTO_SCROLL_BOTTOM_THRESHOLD;
+      pendingScrollRestoreRef.current = null;
+      return;
     }
 
-    const loaded = formatBytes(progress.loaded);
-    const total = formatBytes(progress.total);
+    if (generationRequest?.threadId === activeThreadId && shouldStickToBottomRef.current) {
+      chatLog.scrollTop = chatLog.scrollHeight;
+    }
+  }, [activeMessages, activeThreadId, generationRequest]);
 
-    if (loaded && total) {
-      return `${loaded} / ${total}`;
+  useEffect(() => {
+    const flushAll = () => {
+      flushPendingScrollState();
+
+      Object.keys(threadFlushTimersRef.current).forEach((threadId) => {
+        if (threadFlushTimersRef.current[threadId]) {
+          window.clearTimeout(threadFlushTimersRef.current[threadId]);
+        }
+        void flushThreadSnapshot(threadId);
+      });
+
+      if (activeThreadId) {
+        const currentUiState = threadUiStates[activeThreadId];
+        if (currentUiState) {
+          void persistThreadUiStateNow(currentUiState);
+        }
+      }
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        flushAll();
+      }
+    };
+
+    window.addEventListener("pagehide", flushAll);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener("pagehide", flushAll);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [activeThreadId, threadUiStates]);
+
+  useEffect(() => {
+    return () => {
+      if (scrollStateFlushTimerRef.current) {
+        window.clearTimeout(scrollStateFlushTimerRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!pickerOpen || pickerTab !== "search" || !deferredSearchQuery.trim()) {
+      setSearchResults([]);
+      setSearchError(null);
+      setSearchLoading(false);
+      return;
     }
 
-    if (typeof progress.progress === "number") {
-      return `${progress.progress.toFixed(1)}%`;
+    let cancelled = false;
+    const catalogMatches = searchCatalogModels(deferredSearchQuery);
+
+    setSearchLoading(true);
+    setSearchError(null);
+
+    searchHubModels(deferredSearchQuery, searchFilters, deviceCapabilities)
+      .then((models) => {
+        if (cancelled) {
+          return;
+        }
+
+        const compatibleModels = uniqueModelsById([...catalogMatches, ...models])
+          .map((model) => ({
+            ...model,
+            compatibility: getCompatibilityReport(model, deviceCapabilities, localVerdicts),
+          }))
+          .filter((model) =>
+            shouldShowSearchModel(model, searchFilters, deviceCapabilities, localVerdicts),
+          );
+
+        startTransition(() => setSearchResults(compatibleModels));
+      })
+      .catch((searchIssue) => {
+        if (cancelled) {
+          return;
+        }
+
+        const fallbackMatches = catalogMatches
+          .map((model) => ({
+            ...model,
+            compatibility: getCompatibilityReport(model, deviceCapabilities, localVerdicts),
+          }))
+          .filter((model) =>
+            shouldShowSearchModel(model, searchFilters, deviceCapabilities, localVerdicts),
+          );
+
+        if (fallbackMatches.length > 0) {
+          startTransition(() => setSearchResults(fallbackMatches));
+          setSearchError(null);
+          return;
+        }
+
+        setSearchError(
+          searchIssue instanceof Error
+            ? searchIssue.message
+            : "Unable to search compatible models right now.",
+        );
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setSearchLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    deferredSearchQuery,
+    deviceCapabilities,
+    localVerdicts,
+    pickerOpen,
+    pickerTab,
+    searchFilters,
+  ]);
+
+  useEffect(() => {
+    saveRecentModels(recentModels);
+  }, [recentModels]);
+
+  useEffect(() => {
+    savePickerTab(pickerTab);
+  }, [pickerTab]);
+
+  const decorateModel = (model: ModelDescriptor) => ({
+    ...model,
+    compatibility: getCompatibilityReport(model, deviceCapabilities, localVerdicts),
+  });
+
+  const sortedRecentModels = useMemo(() => {
+    return [...recentModels].sort((left, right) => {
+      const leftVerdict = localVerdicts[left.id];
+      const rightVerdict = localVerdicts[right.id];
+      const leftWeight = leftVerdict?.status === "verified" ? 0 : 1;
+      const rightWeight = rightVerdict?.status === "verified" ? 0 : 1;
+
+      if (leftWeight !== rightWeight) {
+        return leftWeight - rightWeight;
+      }
+
+      const leftTime = leftVerdict ? Date.parse(leftVerdict.lastLoadedAt) : 0;
+      const rightTime = rightVerdict ? Date.parse(rightVerdict.lastLoadedAt) : 0;
+      return rightTime - leftTime;
+    });
+  }, [localVerdicts, recentModels]);
+
+  const curatedSections = useMemo(
+    () =>
+      CURATED_CATEGORIES.map((category) => ({
+        category,
+        models: getCuratedModelsForCategory(category.key).map((model) => ({
+          model: decorateModel(model),
+          compatibility: getCompatibilityReport(model, deviceCapabilities, localVerdicts),
+        })),
+      })),
+    [deviceCapabilities, localVerdicts],
+  );
+
+  const starterModels = useMemo(
+    () =>
+      HOME_STARTER_MODELS.map((model) => ({
+        model: decorateModel(model),
+        compatibility: getCompatibilityReport(model, deviceCapabilities, localVerdicts),
+      })),
+    [deviceCapabilities, localVerdicts],
+  );
+
+  const recentModelsWithCompatibility = useMemo(
+    () =>
+      sortedRecentModels.map((model) => ({
+        model: decorateModel(model),
+        compatibility: getCompatibilityReport(model, deviceCapabilities, localVerdicts),
+      })),
+    [deviceCapabilities, localVerdicts, sortedRecentModels],
+  );
+
+  const recommendedModel = useMemo(() => {
+    const lastModel = loadLastModel();
+    if (lastModel) {
+      const decoratedLastModel = decorateModel(lastModel);
+      if (decoratedLastModel.compatibility?.canLoad) {
+        return decoratedLastModel;
+      }
     }
 
-    return "Downloading";
-  }, [progress]);
+    const preferredCategory = deviceCapabilities.tier === "mobile" ? "mobile_safe" : "balanced";
+    const fallback = CURATED_MODELS.find(
+      (model) => model.category === preferredCategory && model.task === "text",
+    );
 
-  const statusText = useMemo(() => {
-    if (error) {
-      return error;
-    }
+    return fallback ? decorateModel(fallback) : null;
+  }, [deviceCapabilities, localVerdicts]);
 
-    if (appState === "ready") {
-      return `${selectedModel.modelName} is ready in your browser`;
-    }
+  const selectedModelWithCompatibility = useMemo(
+    () => (selectedModel ? decorateModel(selectedModel) : null),
+    [deviceCapabilities, localVerdicts, selectedModel],
+  );
 
-    if (progressLabel) {
-      return `Downloading ${selectedModel.modelName} into your browser cache • ${progressLabel}`;
-    }
-
-    return `Preparing ${selectedModel.modelName} in your browser cache`;
-  }, [appState, error, progressLabel, selectedModel.modelName]);
+  const activeThreadModelWithCompatibility = useMemo(
+    () => (activeThread ? decorateModel(activeThread.model) : null),
+    [activeThread, deviceCapabilities, localVerdicts],
+  );
 
   const progressWidth =
     appState === "ready" ? "100%" : `${Math.max(progress?.progress ?? 6, 6)}%`;
@@ -291,110 +1114,346 @@ function App() {
       ? "panel-progress panel-progress-ready"
       : "panel-progress panel-progress-loading";
 
-  const statusBadgeLabel = error
-    ? "Issue"
-    : appState === "ready"
-      ? "Ready"
-      : "Loading";
-  const statusBadgeClass = error
-    ? "error"
-    : appState === "ready"
-      ? "ready"
-      : "loading";
-
-  const resetChat = () => {
-    setMessages([]);
-    setInput("");
-    setDraftAttachment(null);
-    setError(null);
-    if (fileInputRef.current) {
-      fileInputRef.current.value = "";
+  const defaultThreadModel = useMemo(() => {
+    if (recommendedModel) {
+      return recommendedModel;
     }
-    workerRef.current?.postMessage({ type: "RESET_CHAT" } satisfies WorkerRequest);
+
+    if (activeThreadModelWithCompatibility) {
+      return activeThreadModelWithCompatibility;
+    }
+
+    const fallback = CURATED_MODELS.find((model) =>
+      deviceCapabilities.tier === "mobile"
+        ? model.category === "mobile_safe" && model.task === "text"
+        : model.category === "balanced" && model.task === "text",
+    );
+
+    return fallback ? decorateModel(fallback) : null;
+  }, [activeThreadModelWithCompatibility, deviceCapabilities.tier, recommendedModel]);
+
+  const openPicker = (tab: PickerTab) => {
+    setPickerTab(tab);
+    savePickerTab(tab);
+    setPickerOpen(true);
   };
 
-  const handleModelChange = (mode: ModelMode) => {
-    if (mode === selectedMode) {
+  const closePicker = () => setPickerOpen(false);
+
+  const toggleSearchFilter = (filter: keyof SearchFilters) => {
+    setSearchFilters((current) => {
+      const next = {
+        ...current,
+        [filter]: !current[filter],
+      };
+      saveShowExperimental(next.showExperimental);
+      return next;
+    });
+  };
+
+  const changePickerTab = (tab: PickerTab) => {
+    setPickerTab(tab);
+    savePickerTab(tab);
+  };
+
+  const resolveSelectedModel = async (model: ModelDescriptor) => {
+    const baseModel =
+      model.source === "search"
+        ? enrichModelDescriptor(model, await fetchHubModelDetails(model.id))
+        : model;
+    const resolvedModel = decorateModel(baseModel);
+
+    if (!resolvedModel.compatibility?.canLoad) {
+      throw new Error(resolvedModel.compatibility?.reason ?? "This model is not loadable here.");
+    }
+
+    return resolvedModel;
+  };
+
+  const createNewThread = async (preferredModel?: ModelDescriptor) => {
+    if (isGenerating) {
       return;
     }
 
-    setWorkerVersion((current) => current + 1);
-    setSelectedMode(mode);
-    setAppState("loading");
-    setMessages([]);
-    setInput("");
-    setDraftAttachment(null);
+    const baseModel = preferredModel ?? defaultThreadModel;
+    if (!baseModel || !chatStoreRef.current) {
+      return;
+    }
+
+    const thread = createThreadRecord(stripModelCompatibility(baseModel));
+    const uiState = createDefaultThreadUiState(thread.id);
+    shouldStickToBottomRef.current = true;
+    upsertThreadInState(thread);
+    replaceThreadMessages(thread.id, []);
+    setThreadUiStates((current) => ({ ...current, [thread.id]: uiState }));
+    setActiveThreadId(thread.id);
+    activeThreadIdRef.current = thread.id;
+    saveActiveChatThreadId(thread.id);
+    setScreen("chat");
+    setPendingModel(null);
+    clearDraftAttachment();
     setError(null);
-    setProgress(null);
-    if (fileInputRef.current) {
-      fileInputRef.current.value = "";
+    pendingScrollRestoreRef.current = 0;
+
+    const threadResult = await chatStoreRef.current.putThread(thread);
+    const uiResult = await chatStoreRef.current.putUiState(uiState);
+    handleStorageWriteResults(threadResult, uiResult);
+
+    if (selectedModel?.id !== thread.model.id) {
+      setSelectedModel(thread.model);
     }
   };
 
-  const removeAttachment = () => {
-    setDraftAttachment(null);
-    if (fileInputRef.current) {
-      fileInputRef.current.value = "";
+  const deleteThread = async (threadId: string) => {
+    if (isGenerating || !chatStoreRef.current) {
+      return;
+    }
+
+    const result = await chatStoreRef.current.deleteThread(threadId);
+    handleStorageWriteResults(result);
+
+    const remainingThreads = chatThreads.filter((thread) => thread.id !== threadId);
+    setChatThreads(remainingThreads);
+    chatThreadsRef.current = remainingThreads;
+    setThreadMessages((current) => {
+      const next = { ...current };
+      delete next[threadId];
+      threadMessagesRef.current = next;
+      return next;
+    });
+    setThreadUiStates((current) => {
+      const next = { ...current };
+      delete next[threadId];
+      return next;
+    });
+
+    if (remainingThreads.length === 0) {
+      setActiveThreadId(null);
+      activeThreadIdRef.current = null;
+      saveActiveChatThreadId(null);
+      setSelectedModel(null);
+      setGenerationRequest(null);
+      clearDraftAttachment();
+      setError(null);
+      setScreen("landing");
+      return;
+    }
+
+    if (threadId === activeThreadId) {
+      await openThread(remainingThreads[0].id);
     }
   };
 
-  const submitMessage = () => {
-    const trimmed = input.trim();
-    const canSendImageOnly = isVisionMode && draftAttachment;
+  const activateModel = async (model: ModelDescriptor) => {
+    setLoadingModelId(model.id);
+    setError(null);
+
+    try {
+      const resolvedModel = await resolveSelectedModel(model);
+      const shouldReuseActiveThread =
+        screen === "chat" && activeThread && activeMessages.length === 0 && !isGenerating;
+      const nextThread = shouldReuseActiveThread
+        ? {
+            ...activeThread,
+            ...createThreadRecord(stripModelCompatibility(resolvedModel)),
+            id: activeThread.id,
+            createdAt: activeThread.createdAt,
+          }
+        : createThreadRecord(stripModelCompatibility(resolvedModel));
+
+      const uiState =
+        threadUiStates[nextThread.id] ??
+        (shouldReuseActiveThread ? createDefaultThreadUiState(nextThread.id) : createDefaultThreadUiState(nextThread.id));
+
+      shouldStickToBottomRef.current = true;
+      upsertThreadInState(nextThread);
+      replaceThreadMessages(nextThread.id, []);
+      setThreadUiStates((current) => ({ ...current, [nextThread.id]: uiState }));
+      setActiveThreadId(nextThread.id);
+      activeThreadIdRef.current = nextThread.id;
+      saveActiveChatThreadId(nextThread.id);
+      setSelectedModel(nextThread.model);
+      setScreen("chat");
+      setPickerOpen(false);
+      setPendingModel(null);
+      clearDraftAttachment();
+      setError(null);
+      pendingScrollRestoreRef.current = 0;
+
+      if (chatStoreRef.current) {
+        const threadResult = await chatStoreRef.current.putThread(nextThread);
+        const messagesResult = await chatStoreRef.current.putMessages(nextThread.id, []);
+        const uiResult = await chatStoreRef.current.putUiState(uiState);
+        handleStorageWriteResults(threadResult, messagesResult, uiResult);
+      }
+    } catch (selectionIssue) {
+      setLoadingModelId(null);
+      setError(
+        selectionIssue instanceof Error
+          ? selectionIssue.message
+          : "Unable to prepare this model for loading.",
+      );
+    }
+  };
+
+  const requestModelLoad = async (model: ModelDescriptor) => {
+    if (isGenerating) {
+      return;
+    }
+
+    if (
+      screen === "chat" &&
+      activeThread &&
+      activeThread.model.id !== model.id &&
+      activeMessages.length > 0
+    ) {
+      setPendingModel(model);
+      return;
+    }
+
+    await activateModel(model);
+  };
+
+  const handleGetStarted = async () => {
+    if (!recommendedModel?.compatibility?.canLoad) {
+      return;
+    }
+
+    await activateModel(recommendedModel);
+  };
+
+  const handleInputChange = (value: string) => {
+    if (!activeThreadId) {
+      return;
+    }
+
+    setThreadUiState(activeThreadId, { draftText: value });
+  };
+
+  const handleChatScroll = (scrollTop: number) => {
+    if (!activeThreadId) {
+      return;
+    }
+
+    const chatLog = chatLogRef.current;
+    if (chatLog) {
+      const distanceFromBottom = chatLog.scrollHeight - chatLog.clientHeight - scrollTop;
+      shouldStickToBottomRef.current = distanceFromBottom <= AUTO_SCROLL_BOTTOM_THRESHOLD;
+    }
+
+    pendingScrollStateRef.current = { threadId: activeThreadId, scrollTop };
+    if (scrollStateFlushTimerRef.current) {
+      return;
+    }
+
+    scrollStateFlushTimerRef.current = window.setTimeout(() => {
+      flushPendingScrollState();
+    }, SCROLL_STATE_DEBOUNCE_MS);
+  };
+
+  const handleStopGeneration = () => {
+    if (!generationRequest) {
+      return;
+    }
+
+    setStopRequested(true);
+    workerRef.current?.postMessage({
+      type: "STOP_GENERATION",
+      payload: {
+        threadId: generationRequest.threadId,
+        requestId: generationRequest.requestId,
+      },
+    } satisfies WorkerRequest);
+  };
+
+  const submitMessage = async () => {
+    if (!activeThread || !activeThreadModelWithCompatibility || !selectedModelWithCompatibility) {
+      return;
+    }
+
+    if (selectedModelWithCompatibility.id !== activeThreadModelWithCompatibility.id) {
+      return;
+    }
+
+    const trimmed = activeInput.trim();
+    const canSendImageOnly = activeThreadModelWithCompatibility.task === "vision" && draftAttachment;
 
     if ((!trimmed && !canSendImageOnly) || appState !== "ready" || isGenerating) {
       return;
     }
 
-    const userMessage = createMessage(
+    const nextSequence = (activeMessages.at(-1)?.sequence ?? 0) + 1;
+    const attachment = draftAttachment
+      ? {
+          name: draftAttachment.name,
+          mimeType: draftAttachment.mimeType,
+          size: draftAttachment.size,
+        }
+      : undefined;
+    const requestId = crypto.randomUUID();
+    const userMessage = createThreadMessage(
+      activeThread.id,
+      nextSequence,
       "user",
       trimmed,
-      draftAttachment
-        ? {
-            name: draftAttachment.name,
-            mimeType: draftAttachment.mimeType,
-            size: draftAttachment.size,
-          }
-        : undefined,
+      attachment ? { attachment } : undefined,
     );
-    const assistantMessage = createMessage("assistant", "");
-    const nextMessages = [...messages, userMessage];
+    const assistantDraft = createThreadMessage(activeThread.id, nextSequence + 1, "assistant", "", {
+      status: "streaming",
+      requestId,
+    });
+    const promptMessages = [...activeMessages, userMessage];
+    const nextMessages = [...promptMessages, assistantDraft];
+    const nextThread = updateThreadFromMessages(activeThread, nextMessages);
 
-    setMessages([...nextMessages, assistantMessage]);
-    setInput("");
-    setDraftAttachment(null);
-    setIsGenerating(true);
+    replaceThreadMessages(activeThread.id, nextMessages);
+    upsertThreadInState(nextThread);
+    setThreadUiState(activeThread.id, { draftText: "" });
+    setGenerationRequest({
+      threadId: activeThread.id,
+      requestId,
+      modelId: selectedModelWithCompatibility.id,
+    });
+    setStopRequested(false);
     setError(null);
-    if (fileInputRef.current) {
-      fileInputRef.current.value = "";
-    }
+    clearDraftAttachment();
+
+    await persistThreadSnapshotNow(nextThread, nextMessages);
 
     workerRef.current?.postMessage({
       type: "GENERATE",
       payload: {
-        mode: selectedMode,
-        messages: nextMessages,
+        threadId: activeThread.id,
+        requestId,
+        model: selectedModelWithCompatibility,
+        summary: activeThread.memorySummary,
+        summaryUpToSequence: activeThread.summaryUpToSequence,
+        messages: promptMessages,
         image: draftAttachment?.file ?? null,
+        options: computeGenerationOptions(
+          appSettings,
+          activeThreadModelWithCompatibility.runtime.contextWindowTokens,
+        ),
       },
     } satisfies WorkerRequest);
   };
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    submitMessage();
+    void submitMessage();
   };
 
   const handleComposerKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
-      submitMessage();
+      void submitMessage();
     }
   };
 
   const handleFileChange = () => {
     const file = fileInputRef.current?.files?.[0];
     if (!file) {
-      setDraftAttachment(null);
+      clearDraftAttachment();
       return;
     }
 
@@ -406,193 +1465,220 @@ function App() {
     });
   };
 
-  if (!isWebGpuSupported) {
+  const removeAttachment = () => {
+    clearDraftAttachment();
+  };
+
+  const openSettings = () => setSettingsOpen(true);
+  const closeSettings = () => setSettingsOpen(false);
+
+  const saveSettings = (next: AppSettings) => {
+    setAppSettings(next);
+    const result = saveAppSettings(next);
+    if (!result.ok) {
+      setChatStorageWarning("Settings could not be saved locally in this browser.");
+      return;
+    }
+
+    setChatStorageWarning(getDefaultStorageMessage(chatPersistenceStatus));
+  };
+
+  const clearAllChats = async () => {
+    if (!chatStoreRef.current) {
+      return;
+    }
+
+    const result = await chatStoreRef.current.clearAll();
+    handleStorageWriteResults(result);
+    setChatThreads([]);
+    chatThreadsRef.current = [];
+    setThreadMessages({});
+    threadMessagesRef.current = {};
+    setThreadUiStates({});
+    setActiveThreadId(null);
+    activeThreadIdRef.current = null;
+    saveActiveChatThreadId(null);
+    setSelectedModel(null);
+    setGenerationRequest(null);
+    clearDraftAttachment();
+    setError(null);
+    setScreen("landing");
+  };
+
+  const clearAllData = async () => {
+    await clearAllChats();
+    setLocalVerdicts({});
+    setRecentModels([]);
+    setAppSettings(DEFAULT_APP_SETTINGS);
+    setPickerTab("curated");
+    setSearchFilters({
+      mobileSafe: deviceCapabilities.tier === "mobile",
+      verifiedOnly: false,
+      showExperimental: false,
+    });
+    clearLightweightAppState();
+  };
+
+  if (booting) {
     return (
-      <main className="shell shell-single">
-        <section className="panel unsupported-panel">
-          <p className="eyebrow">Browser LLM Chat</p>
-          <h1>WebGPU is required.</h1>
-          <p className="lede">
-            Open this app in recent Chrome or Edge on desktop. Model files are downloaded into the
-            browser, so WebGPU support is required here.
-          </p>
+      <main className="shell">
+        <section className="panel app-panel chat-workspace-panel">
+          <div className="panel-progress panel-progress-loading" aria-hidden="true">
+            <div className="panel-progress-fill" style={{ width: "24%" }} />
+          </div>
         </section>
       </main>
     );
   }
 
+  if (screen === "landing" || !activeThreadModelWithCompatibility) {
+    return (
+      <>
+        <LandingScreen
+          recommendedModel={recommendedModel}
+          starterModels={starterModels}
+          loadingModelId={loadingModelId}
+          getStartedDisabled={!recommendedModel?.compatibility?.canLoad}
+          globalMessage={error ?? chatStorageWarning}
+          onGetStarted={handleGetStarted}
+          onOpenPicker={openPicker}
+          onSelectModel={requestModelLoad}
+        />
+
+        <ModelPickerDialog
+          open={pickerOpen}
+          activeTab={pickerTab}
+          curatedSections={curatedSections}
+          recentModels={recentModelsWithCompatibility}
+          searchQuery={searchQuery}
+          searchFilters={searchFilters}
+          searchResults={searchResults.map((model) => ({
+            model,
+            compatibility: model.compatibility!,
+          }))}
+          searchLoading={searchLoading}
+          searchError={searchError}
+          loadingModelId={loadingModelId}
+          onClose={closePicker}
+          onTabChange={changePickerTab}
+          onSearchQueryChange={setSearchQuery}
+          onToggleFilter={toggleSearchFilter}
+          onLoadModel={requestModelLoad}
+        />
+      </>
+    );
+  }
+
+  const chatAppState =
+    selectedModelWithCompatibility?.id === activeThreadModelWithCompatibility.id
+      ? appState
+      : "loading";
+
   return (
-    <main className="shell">
-      <section className="panel app-panel">
-        <div className={progressClassName} aria-hidden="true">
-          <div
-            className="panel-progress-fill"
-            style={{
-              width: progressWidth,
-            }}
-          />
-        </div>
+    <>
+      <ChatScreen
+        threads={chatThreads}
+        activeThreadId={activeThreadId}
+        selectedModel={activeThreadModelWithCompatibility}
+        appState={chatAppState}
+        messages={activeMessages}
+        input={activeInput}
+        progress={progress}
+        progressWidth={progressWidth}
+        progressClassName={progressClassName}
+        error={error}
+        isGenerating={isGenerating}
+        draftAttachment={draftAttachment}
+        storageWarning={chatStorageWarning}
+        chatLogRef={chatLogRef}
+        fileInputRef={fileInputRef}
+        onCreateThread={() => {
+          void createNewThread();
+        }}
+        onSelectThread={(threadId) => {
+          void openThread(threadId);
+        }}
+        onDeleteThread={(threadId) => {
+          void deleteThread(threadId);
+        }}
+        onChangeModel={() => openPicker("curated")}
+        onOpenSettings={openSettings}
+        onInputChange={handleInputChange}
+        onSubmit={handleSubmit}
+        onComposerKeyDown={handleComposerKeyDown}
+        onFileChange={handleFileChange}
+        onRemoveAttachment={removeAttachment}
+        onChatScroll={handleChatScroll}
+        onStopGeneration={handleStopGeneration}
+        stopRequested={stopRequested}
+      />
 
-        <header className="topbar topbar-chat">
-          <div className="topbar-copy">
-            <p className="eyebrow">Browser LLM Chat</p>
-            <h1>Local LLM in your browser</h1>
-            <p className="lede lede-compact">
-              No backend. Model files stay in your browser cache after the first download.
+      <ModelPickerDialog
+        open={pickerOpen}
+        activeTab={pickerTab}
+        curatedSections={curatedSections}
+        recentModels={recentModelsWithCompatibility}
+        searchQuery={searchQuery}
+        searchFilters={searchFilters}
+        searchResults={searchResults.map((model) => ({
+          model,
+          compatibility: model.compatibility!,
+        }))}
+        searchLoading={searchLoading}
+        searchError={searchError}
+        loadingModelId={loadingModelId}
+        onClose={closePicker}
+        onTabChange={changePickerTab}
+        onSearchQueryChange={setSearchQuery}
+        onToggleFilter={toggleSearchFilter}
+        onLoadModel={requestModelLoad}
+      />
+
+      <SettingsDialog
+        open={settingsOpen}
+        settings={appSettings}
+        contextWindowTokens={activeThreadModelWithCompatibility.runtime.contextWindowTokens ?? null}
+        storageStatus={chatPersistenceStatus}
+        storageWarning={chatStorageWarning}
+        onClose={closeSettings}
+        onSave={saveSettings}
+        onClearChatHistory={() => {
+          void clearAllChats();
+        }}
+        onClearAllData={() => {
+          void clearAllData();
+        }}
+        onClearAllDownloadedModels={() => {
+          setChatStorageWarning(getDefaultStorageMessage(chatPersistenceStatus));
+        }}
+      />
+
+      {pendingModel && (
+        <div className="dialog-backdrop" role="presentation">
+          <section className="confirm-shell" role="dialog" aria-modal="true" aria-label="Change model">
+            <p className="section-label">Change Model</p>
+            <h2>Start a new chat with this model?</h2>
+            <p className="confirm-copy">
+              Switching models starts a new conversation with <strong>{pendingModel.label}</strong>.
             </p>
-          </div>
-          <div className="topbar-actions">
-            <span className={`status-badge status-${statusBadgeClass}`}>{statusBadgeLabel}</span>
-            <label className="model-switcher">
-              <span className="sr-only">Select model</span>
-              <select
-                value={selectedMode}
-                onChange={(event) => handleModelChange(event.target.value as ModelMode)}
-                disabled={isGenerating}
-              >
-                {MODEL_OPTIONS.map((option) => (
-                  <option key={option.key} value={option.key}>
-                    {option.label} · {option.modelName} ({option.paramsLabel})
-                  </option>
-                ))}
-              </select>
-            </label>
-            <button
-              className="secondary-button"
-              onClick={resetChat}
-              type="button"
-              disabled={isGenerating || messages.length === 0}
-            >
-              Reset
-            </button>
-          </div>
-        </header>
-
-        <section className="chat-log" aria-label="Chat messages" ref={chatLogRef}>
-          {messages.length === 0 ? (
-            <div className="empty-state">
-              <p className="empty-title">Start chatting.</p>
-              <p className="empty-copy">
-                {appState === "ready"
-                  ? "The selected model is ready. Ask a question to begin."
-                  : "The selected model is still loading. Send unlocks automatically once it is ready."}
-              </p>
-            </div>
-          ) : (
-            messages.map((message) => (
-              <article key={message.id} className={`message message-${message.role}`}>
-                {message.attachment && (
-                  <div className="message-attachment">
-                    <span className="attachment-chip">
-                      Image attached: {message.attachment.name}
-                    </span>
-                  </div>
-                )}
-                {message.role === "assistant" ? (
-                  <div className="markdown-body">
-                    {message.reasoning && (
-                      <details className="reasoning-panel">
-                        <summary>
-                          {message.reasoningState === "streaming" ? "Thinking" : "View thinking"}
-                        </summary>
-                        <div className="reasoning-body">
-                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                            {message.reasoning}
-                          </ReactMarkdown>
-                        </div>
-                      </details>
-                    )}
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                      {message.content ||
-                        (message.reasoningState === "streaming"
-                          ? ""
-                          : isGenerating
-                            ? "Thinking..."
-                            : "")}
-                    </ReactMarkdown>
-                    {message.reasoningState === "streaming" && !message.content && (
-                      <p className="thinking-indicator">Thinking…</p>
-                    )}
-                  </div>
-                ) : (
-                  <p className="message-content">{message.content}</p>
-                )}
-              </article>
-            ))
-          )}
-        </section>
-
-        <form className="composer" onSubmit={handleSubmit}>
-          {isVisionMode && (
-            <div className="composer-attachments">
-              <input
-                ref={fileInputRef}
-                className="sr-only"
-                id="vision-upload"
-                type="file"
-                accept="image/*"
-                onChange={handleFileChange}
-                disabled={appState !== "ready" || isGenerating}
-              />
-              <button
-                className="attach-button"
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={appState !== "ready" || isGenerating}
-              >
-                Attach image
+            <div className="confirm-actions">
+              <button className="secondary-button" type="button" onClick={() => setPendingModel(null)}>
+                Cancel
               </button>
-              {draftAttachment && (
-                <button
-                  className="attachment-chip attachment-chip-action"
-                  type="button"
-                  onClick={removeAttachment}
-                >
-                  {draftAttachment.name} · {formatBytes(draftAttachment.size) ?? "image"} ×
-                </button>
-              )}
+              <button
+                className="primary-button"
+                type="button"
+                onClick={() => {
+                  void activateModel(pendingModel);
+                }}
+              >
+                Start New Chat
+              </button>
             </div>
-          )}
-          <label className="sr-only" htmlFor="chat-input">
-            Ask the model something
-          </label>
-          <textarea
-            id="chat-input"
-            className="composer-input"
-            value={input}
-            onChange={(event) => setInput(event.target.value)}
-            onKeyDown={handleComposerKeyDown}
-            placeholder={
-              appState === "ready"
-                ? isVisionMode
-                  ? "Type a prompt, or attach an image and ask about it..."
-                  : "Message the model..."
-                : "Model is downloading into your browser..."
-            }
-            rows={2}
-            disabled={appState !== "ready" || isGenerating}
-          />
-          <div className="composer-footer">
-            <p className={`hint ${error ? "error-text" : ""}`}>
-              {appState === "ready"
-                ? "Press Enter to send. Use Shift+Enter for a new line."
-                : "Send unlocks automatically once the model is ready."}
-            </p>
-            <button
-              className="primary-button"
-              type="submit"
-              disabled={
-                appState !== "ready" ||
-                isGenerating ||
-                (input.trim().length === 0 && !draftAttachment)
-              }
-            >
-              {isGenerating ? "Generating..." : appState === "ready" ? "Send" : "Loading..."}
-            </button>
-          </div>
-        </form>
-      </section>
-    </main>
+          </section>
+        </div>
+      )}
+    </>
   );
 }
 
