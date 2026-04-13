@@ -278,9 +278,16 @@ export const generateVisionReply = async ({
     },
   );
   const rawImage = image ? await RawImage.read(image) : null;
-  const inputs = rawImage
-    ? await processor(prompt, rawImage)
-    : await processor(prompt);
+  const inputs = await (() => {
+    if (model.runtime.visionLoaderKind === "lfm2_5_vl") {
+      // LFM2.5-VL requires image first, then text, with add_special_tokens:false
+      // to avoid the processor double-adding special tokens
+      return rawImage
+        ? processor(rawImage, prompt, { add_special_tokens: false })
+        : processor(prompt, { add_special_tokens: false });
+    }
+    return rawImage ? processor(prompt, rawImage) : processor(prompt);
+  })();
 
   let streamedText = "";
   const stoppingCriteria = new InterruptableStoppingCriteria();

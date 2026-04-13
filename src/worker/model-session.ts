@@ -1,5 +1,6 @@
 import type { InterruptableStoppingCriteria } from "@huggingface/transformers";
 import {
+  AutoModelForImageTextToText,
   AutoProcessor,
   pipeline,
   Qwen3_5ForConditionalGeneration,
@@ -178,33 +179,57 @@ export const createModelSession = (postMessageToUi: WorkerMessagePoster) => {
   };
 
   const loadVisionResources = async (model: ModelDescriptor) => {
-    if (model.runtime.visionLoaderKind !== "qwen3_5") {
-      throw new Error(
-        "This vision loader is not supported in the browser worker yet.",
-      );
+    const progressHandler = getProgressHandler(model.id);
+
+    if (model.runtime.visionLoaderKind === "qwen3_5") {
+      const [nextProcessor, nextVisionModel] = await Promise.all([
+        AutoProcessor.from_pretrained(model.hf.modelId, {
+          progress_callback: progressHandler,
+        }),
+        Qwen3_5ForConditionalGeneration.from_pretrained(model.hf.modelId, {
+          dtype: {
+            embed_tokens: "q4",
+            vision_encoder: "fp16",
+            decoder_model_merged: "q4",
+          },
+          device: "webgpu",
+          progress_callback: progressHandler,
+        }),
+      ]);
+
+      return {
+        textGenerator: null,
+        processor: nextProcessor,
+        visionModel: nextVisionModel as VisionModelInstance,
+      } satisfies LoadResources;
     }
 
-    const progressHandler = getProgressHandler(model.id);
-    const [nextProcessor, nextVisionModel] = await Promise.all([
-      AutoProcessor.from_pretrained(model.hf.modelId, {
-        progress_callback: progressHandler,
-      }),
-      Qwen3_5ForConditionalGeneration.from_pretrained(model.hf.modelId, {
-        dtype: {
-          embed_tokens: "q4",
-          vision_encoder: "fp16",
-          decoder_model_merged: "q4",
-        },
-        device: "webgpu",
-        progress_callback: progressHandler,
-      }),
-    ]);
+    if (model.runtime.visionLoaderKind === "lfm2_5_vl") {
+      const [nextProcessor, nextVisionModel] = await Promise.all([
+        AutoProcessor.from_pretrained(model.hf.modelId, {
+          progress_callback: progressHandler,
+        }),
+        AutoModelForImageTextToText.from_pretrained(model.hf.modelId, {
+          dtype: {
+            embed_tokens: "fp16",
+            vision_encoder: "fp16",
+            decoder_model_merged: "q4",
+          },
+          device: "webgpu",
+          progress_callback: progressHandler,
+        }),
+      ]);
 
-    return {
-      textGenerator: null,
-      processor: nextProcessor,
-      visionModel: nextVisionModel,
-    } satisfies LoadResources;
+      return {
+        textGenerator: null,
+        processor: nextProcessor,
+        visionModel: nextVisionModel as VisionModelInstance,
+      } satisfies LoadResources;
+    }
+
+    throw new Error(
+      "This vision loader is not supported in the browser worker yet.",
+    );
   };
 
   const ensureModelReady = async (model: ModelDescriptor) => {

@@ -1,8 +1,29 @@
 {
   "name": "browser-llm",
-  "private": true,
   "version": "0.1.0",
+  "description": "Fully local, privacy-first AI chat application running models via WebGPU.",
+  "author": "Jefreesujit",
+  "license": "MIT",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Jefreesujit/browser-llm.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Jefreesujit/browser-llm/issues"
+  },
+  "homepage": "https://github.com/Jefreesujit/browser-llm#readme",
+  "keywords": [
+    "ai",
+    "llm",
+    "webgpu",
+    "transformers.js",
+    "react",
+    "local-ai",
+    "privacy-first",
+    "browser-ai",
+    "private-ai"
+  ],
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",

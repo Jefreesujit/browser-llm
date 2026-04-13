@@ -75,7 +75,7 @@ export type CuratedCategoryKey =
   | "vision"
   | "desktop_experimental";
 export type Dtype = "q4f16" | "q4" | "q8" | "int8" | "uint8" | "fp16" | "fp32";
-export type VisionLoaderKind = "qwen3_5";
+export type VisionLoaderKind = "qwen3_5" | "lfm2_5_vl";
 export type ChatPersistenceStatus =
   | "ready"
   | "fallback_local_storage"
