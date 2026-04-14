@@ -1,25 +1,75 @@
 {
   "name": "browser-llm",
-  "private": true,
   "version": "0.1.0",
+  "description": "Fully local, privacy-first AI chat application running models via WebGPU.",
+  "author": "Jefreesujit",
+  "license": "MIT",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Jefreesujit/browser-llm.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Jefreesujit/browser-llm/issues"
+  },
+  "homepage": "https://github.com/Jefreesujit/browser-llm#readme",
+  "keywords": [
+    "ai",
+    "llm",
+    "webgpu",
+    "transformers.js",
+    "react",
+    "local-ai",
+    "privacy-first",
+    "browser-ai",
+    "private-ai"
+  ],
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "lint": "eslint . --max-warnings=0",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write \"src/**/*.{ts,tsx,css}\" \"docs/*.md\" \"docs/plans/*.md\" \".github/**/*.{yml,yaml}\" \"*.{md,json,js,ts,css}\"",
+    "format:check": "prettier --check \"src/**/*.{ts,tsx,css}\" \"docs/*.md\" \"docs/plans/*.md\" \".github/**/*.{yml,yaml}\" \"*.{md,json,js,ts,css}\"",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "npm run lint && npm run typecheck && npm run test && npm run build"
+  },
+  "engines": {
+    "node": "22.x"
   },
   "dependencies": {
     "@huggingface/transformers": "4.0.0-next.9",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "react-markdown": "10.1.0",
-    "remark-gfm": "4.0.1"
+    "remark-gfm": "4.0.1",
+    "zustand": "^5.0.8"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.0",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "6.0.1",
+    "eslint": "^9.39.1",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-react-hooks": "^7.0.0",
+    "eslint-plugin-react-refresh": "^0.4.24",
+    "eslint-plugin-simple-import-sort": "^12.1.1",
+    "globals": "^16.5.0",
+    "jsdom": "^27.0.1",
+    "prettier": "^3.6.2",
     "typescript": "6.0.2",
-    "vite": "8.0.2"
+    "typescript-eslint": "^8.46.2",
+    "vite": "8.0.2",
+    "vitest": "^3.2.4"
+  },
+  "prettier": {
+    "semi": true,
+    "trailingComma": "all"
   }
 }

@@ -1,13 +1,13 @@
-import { useDeferredValue, useEffect } from "react";
+import { useDeferredValue } from "react";
 
+import { useDialogScrollLock } from "../hooks/useDialogScrollLock";
+import type { CuratedCategory } from "../models";
 import type {
   CompatibilityReport,
-  CuratedCategoryKey,
   ModelDescriptor,
   PickerTab,
   SearchFilters,
 } from "../types";
-import type { CuratedCategory } from "../models";
 import ModelCard from "./ModelCard";
 
 type CategorizedModel = {
@@ -19,10 +19,16 @@ type ModelPickerDialogProps = {
   open: boolean;
   activeTab: PickerTab;
   curatedSections: CategorizedModel[];
-  recentModels: Array<{ model: ModelDescriptor; compatibility: CompatibilityReport }>;
+  recentModels: Array<{
+    model: ModelDescriptor;
+    compatibility: CompatibilityReport;
+  }>;
   searchQuery: string;
   searchFilters: SearchFilters;
-  searchResults: Array<{ model: ModelDescriptor; compatibility: CompatibilityReport }>;
+  searchResults: Array<{
+    model: ModelDescriptor;
+    compatibility: CompatibilityReport;
+  }>;
   searchLoading: boolean;
   searchError: string | null;
   loadingModelId: string | null;
@@ -42,7 +48,8 @@ const TAB_LABELS: Record<PickerTab, string> = {
 const EMPTY_STATE_COPY: Record<PickerTab, string> = {
   curated: "No curated models are available.",
   recent: "Models you load successfully will appear here.",
-  search: "Search by family or publisher, such as gemma, qwen, smollm, or onnx-community.",
+  search:
+    "Search by family or publisher, such as gemma, qwen, smollm, or onnx-community.",
 };
 
 function ModelPickerDialog({
@@ -65,22 +72,7 @@ function ModelPickerDialog({
   const deferredSearchQuery = useDeferredValue(searchQuery);
   const hasSearchQuery = deferredSearchQuery.trim().length > 0;
 
-  useEffect(() => {
-    if (!open || typeof document === "undefined") {
-      return;
-    }
-
-    const previousBodyOverflow = document.body.style.overflow;
-    const previousHtmlOverflow = document.documentElement.style.overflow;
-
-    document.body.style.overflow = "hidden";
-    document.documentElement.style.overflow = "hidden";
-
-    return () => {
-      document.body.style.overflow = previousBodyOverflow;
-      document.documentElement.style.overflow = previousHtmlOverflow;
-    };
-  }, [open]);
+  useDialogScrollLock(open);
 
   if (!open) {
     return null;
@@ -89,7 +81,7 @@ function ModelPickerDialog({
   return (
     <div className="dialog-backdrop" role="presentation" onClick={onClose}>
       <section
-        className="dialog-shell"
+        className="dialog-shell picker-shell"
         role="dialog"
         aria-modal="true"
         aria-label="Choose a model"
@@ -220,8 +212,8 @@ function ModelPickerDialog({
               ) : searchResults.length === 0 ? (
                 <div className="picker-empty">
                   <p>
-                    No browser-compatible results matched this query. Try gemma, qwen, smollm, or
-                    turn on experimental models.
+                    No browser-compatible results matched this query. Try gemma,
+                    qwen, smollm, or turn on experimental models.
                   </p>
                 </div>
               ) : (

@@ -1,5 +1,8 @@
 export type ChatRole = "system" | "user" | "assistant";
 
+export type Screen = "landing" | "chat";
+export type ModelLoadState = "loading" | "ready";
+
 export type ChatAttachment = {
   name: string;
   mimeType: string;
@@ -31,6 +34,13 @@ export type ThreadUiState = {
   draftText: string;
   scrollTop: number;
   updatedAt: string;
+};
+
+export type DraftAttachment = {
+  file: File;
+  name: string;
+  mimeType: string;
+  size: number;
 };
 
 export type ChatThread = {
@@ -65,7 +75,7 @@ export type CuratedCategoryKey =
   | "vision"
   | "desktop_experimental";
 export type Dtype = "q4f16" | "q4" | "q8" | "int8" | "uint8" | "fp16" | "fp32";
-export type VisionLoaderKind = "qwen3_5";
+export type VisionLoaderKind = "qwen3_5" | "lfm2_5_vl";
 export type ChatPersistenceStatus =
   | "ready"
   | "fallback_local_storage"
@@ -142,6 +152,12 @@ export type AppSettings = {
   percentageMaxTokens: number;
 };
 
+export type GenerationRequestState = {
+  threadId: string;
+  requestId: string;
+  modelId: string;
+};
+
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   temperature: 0.7,
   topP: 0.9,
@@ -155,6 +171,14 @@ export type GenerationOptions = {
   temperature: number;
   topP: number;
 };
+
+export type ModelLoadProgress = {
+  modelId: string;
+  file: string;
+  progress: number | null;
+  loaded: number | null;
+  total: number | null;
+} | null;
 
 export type LocalModelVerdictEntry = {
   status: LocalModelVerdict;
@@ -179,7 +203,10 @@ export type ChatStore = {
   listThreads: () => Promise<ChatThread[]>;
   getSnapshot: (threadId: string) => Promise<ChatStoreSnapshot | null>;
   putThread: (thread: ChatThread) => Promise<StorageWriteResult>;
-  putMessages: (threadId: string, messages: ThreadMessage[]) => Promise<StorageWriteResult>;
+  putMessages: (
+    threadId: string,
+    messages: ThreadMessage[],
+  ) => Promise<StorageWriteResult>;
   putUiState: (uiState: ThreadUiState) => Promise<StorageWriteResult>;
   deleteThread: (threadId: string) => Promise<StorageWriteResult>;
   clearAll: () => Promise<StorageWriteResult>;
@@ -187,7 +214,10 @@ export type ChatStore = {
 
 export type WorkerRequest =
   | { type: "LOAD_MODEL"; payload: { model: ModelDescriptor } }
-  | { type: "STOP_GENERATION"; payload?: { threadId?: string; requestId?: string } }
+  | {
+      type: "STOP_GENERATION";
+      payload?: { threadId?: string; requestId?: string };
+    }
   | {
       type: "GENERATE";
       payload: {
@@ -216,11 +246,20 @@ export type WorkerResponse =
   | { type: "MODEL_READY"; payload: { modelId: string } }
   | {
       type: "MODEL_LOAD_RESULT";
-      payload: { modelId: string; status: "verified" | "failed_on_device"; message?: string };
+      payload: {
+        modelId: string;
+        status: "verified" | "failed_on_device";
+        message?: string;
+      };
     }
   | {
       type: "STREAM_TOKEN";
-      payload: { threadId: string; requestId: string; modelId: string; text: string };
+      payload: {
+        threadId: string;
+        requestId: string;
+        modelId: string;
+        text: string;
+      };
     }
   | {
       type: "GENERATION_DONE";
@@ -235,5 +274,10 @@ export type WorkerResponse =
     }
   | {
       type: "ERROR";
-      payload: { threadId?: string; requestId?: string; modelId: string; message: string };
+      payload: {
+        threadId?: string;
+        requestId?: string;
+        modelId: string;
+        message: string;
+      };
     };
