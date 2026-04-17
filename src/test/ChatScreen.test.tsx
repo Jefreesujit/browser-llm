@@ -11,13 +11,12 @@ describe("ChatScreen", () => {
       <ChatScreen
         threads={[]}
         activeThreadId={null}
+        activeThreadTitle="Project kickoff"
         selectedModel={createModelDescriptor()}
         appState="ready"
         messages={[]}
         input=""
         progress={null}
-        progressWidth="100%"
-        progressClassName="panel-progress panel-progress-ready"
         error={null}
         isGenerating={false}
         draftAttachment={null}
@@ -27,7 +26,6 @@ describe("ChatScreen", () => {
         onSelectThread={vi.fn()}
         onDeleteThread={vi.fn()}
         onChangeModel={vi.fn()}
-        onOpenSettings={vi.fn()}
         onInputChange={vi.fn()}
         onSubmit={vi.fn()}
         onComposerKeyDown={vi.fn()}
@@ -40,6 +38,7 @@ describe("ChatScreen", () => {
     );
 
     expect(screen.getByText("Start chatting.")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Project kickoff" })).toBeInTheDocument();
     expect(
       screen.getByRole("button", {
         name: "Give me a quick plan for this task.",

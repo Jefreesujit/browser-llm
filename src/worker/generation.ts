@@ -332,3 +332,89 @@ export const generateVisionReply = async ({
     summaryUpToSequence: 0,
   };
 };
+
+type GenerateTranscriptionParams = {
+  session: ModelSession;
+  postMessageToUi: WorkerMessagePoster;
+  model: ModelDescriptor;
+  audio: Float32Array;
+  requestId: string;
+  returnTimestamps: boolean;
+};
+
+export const generateTranscription = async ({
+  session,
+  postMessageToUi,
+  model,
+  audio,
+  requestId,
+  returnTimestamps,
+}: GenerateTranscriptionParams) => {
+  await session.ensureModelReady(model);
+
+  const speechRecognizer = session.getSpeechRecognizer();
+  if (!speechRecognizer) {
+    throw new Error("The selected transcription model is not ready yet.");
+  }
+
+  postMessageToUi({
+    type: "TASK_STATUS",
+    payload: {
+      requestId,
+      modelId: model.id,
+      status: "Transcribing audio",
+    },
+  });
+
+  return speechRecognizer(audio, {
+    task: "transcribe",
+    return_timestamps:
+      model.runtime.supportsTimestamps && returnTimestamps ? true : false,
+  });
+};
+
+type GenerateSpeechParams = {
+  session: ModelSession;
+  postMessageToUi: WorkerMessagePoster;
+  model: ModelDescriptor;
+  requestId: string;
+  text: string;
+  voice?: string;
+  speed?: number;
+};
+
+export const generateSpeech = async ({
+  session,
+  postMessageToUi,
+  model,
+  requestId,
+  text,
+  voice: _voice,
+  speed,
+}: GenerateSpeechParams) => {
+  await session.ensureModelReady(model);
+
+  postMessageToUi({
+    type: "TASK_STATUS",
+    payload: {
+      requestId,
+      modelId: model.id,
+      status: "Generating speech",
+    },
+  });
+
+  const speechSynthesizer = session.getSpeechSynthesizer();
+  if (!speechSynthesizer) {
+    throw new Error("The selected speech model is not ready yet.");
+  }
+
+  const output = await speechSynthesizer(text, {
+    speaker_embeddings: model.runtime.speakerEmbeddingsUrl,
+    speed,
+  });
+
+  return {
+    audio: output.audio,
+    sampleRate: output.sampling_rate,
+  };
+};

@@ -7,10 +7,64 @@ import {
   type InstalledModelEntry,
 } from "../../cache";
 import { formatBytes } from "../../format";
+import { getCanonicalCuratedModel } from "../../models";
 
 type ModelCacheSettingsTabProps = {
   onClearAllDownloadedModels: () => void;
 };
+
+type InstalledModelGroupKey = "chat" | "voice" | "other";
+
+const GROUP_ORDER: InstalledModelGroupKey[] = ["chat", "voice", "other"];
+
+const GROUP_COPY: Record<
+  InstalledModelGroupKey,
+  { label: string; description: string }
+> = {
+  chat: {
+    label: "Chat Models",
+    description: "Text and vision model files cached for chat use.",
+  },
+  voice: {
+    label: "Voice Models",
+    description: "Speech and transcription model files cached for voice use.",
+  },
+  other: {
+    label: "Other Models",
+    description: "Cached model files that could not be classified automatically.",
+  },
+};
+
+const getInstalledModelGroup = (
+  modelId: string,
+): InstalledModelGroupKey => {
+  const canonicalModel = getCanonicalCuratedModel(modelId);
+
+  if (!canonicalModel) {
+    return "other";
+  }
+
+  if (canonicalModel.task === "stt" || canonicalModel.task === "tts") {
+    return "voice";
+  }
+
+  return "chat";
+};
+
+const groupInstalledModels = (installedModels: InstalledModelEntry[]) =>
+  installedModels.reduce<
+    Record<InstalledModelGroupKey, InstalledModelEntry[]>
+  >(
+    (groups, model) => {
+      groups[getInstalledModelGroup(model.modelId)].push(model);
+      return groups;
+    },
+    {
+      chat: [],
+      voice: [],
+      other: [],
+    },
+  );
 
 const useInstalledModels = (onCleared?: () => void) => {
   const [installedModels, setInstalledModels] = useState<InstalledModelEntry[]>(
@@ -87,6 +141,42 @@ const useInstalledModels = (onCleared?: () => void) => {
   };
 };
 
+type InstalledModelListProps = {
+  installedModels: InstalledModelEntry[];
+  deletingIds: Set<string>;
+  onDelete: (modelId: string) => void;
+};
+
+function InstalledModelList({
+  installedModels,
+  deletingIds,
+  onDelete,
+}: InstalledModelListProps) {
+  return (
+    <ul className="settings-model-list">
+      {installedModels.map(({ modelId, fileCount, approximateBytes }) => (
+        <li key={modelId} className="settings-model-row">
+          <div className="settings-model-info">
+            <span className="settings-model-id">{modelId}</span>
+            <span className="settings-model-meta">
+              {fileCount} file{fileCount !== 1 ? "s" : ""}
+              {approximateBytes ? ` · ${formatBytes(approximateBytes)}` : ""}
+            </span>
+          </div>
+          <button
+            type="button"
+            className="settings-delete-btn"
+            disabled={deletingIds.has(modelId)}
+            onClick={() => onDelete(modelId)}
+          >
+            {deletingIds.has(modelId) ? "Removing…" : "Remove"}
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function ModelCacheSettingsTab({
   onClearAllDownloadedModels,
 }: ModelCacheSettingsTabProps) {
@@ -98,6 +188,7 @@ function ModelCacheSettingsTab({
     deleteInstalledModel,
     clearInstalledModels,
   } = useInstalledModels(onClearAllDownloadedModels);
+  const groupedModels = groupInstalledModels(installedModels);
 
   return (
     <div className="settings-section">
@@ -109,6 +200,10 @@ function ModelCacheSettingsTab({
           Remove cached model files from browser storage. They will download
           again next time.
         </p>
+        <p className="settings-field-description">
+          Active models remain in memory until you switch models or refresh the
+          page.
+        </p>
 
         {loadingModels ? (
           <p className="settings-cache-loading">Scanning browser cache…</p>
@@ -117,31 +212,25 @@ function ModelCacheSettingsTab({
             No downloaded model files found in your browser cache.
           </p>
         ) : (
-          <ul className="settings-model-list">
-            {installedModels.map(({ modelId, fileCount, approximateBytes }) => (
-              <li key={modelId} className="settings-model-row">
-                <div className="settings-model-info">
-                  <span className="settings-model-id">{modelId}</span>
-                  <span className="settings-model-meta">
-                    {fileCount} file{fileCount !== 1 ? "s" : ""}
-                    {approximateBytes
-                      ? ` · ${formatBytes(approximateBytes)}`
-                      : ""}
-                  </span>
-                </div>
-                <button
-                  type="button"
-                  className="settings-delete-btn"
-                  disabled={deletingIds.has(modelId)}
-                  onClick={() => {
-                    void deleteInstalledModel(modelId);
-                  }}
-                >
-                  {deletingIds.has(modelId) ? "Removing…" : "Remove"}
-                </button>
-              </li>
-            ))}
-          </ul>
+          <div className="settings-model-groups">
+            {GROUP_ORDER.filter((group) => groupedModels[group].length > 0).map(
+              (group) => (
+                <section key={group} className="settings-model-group">
+                  <div className="settings-model-group-header">
+                    <h4>{GROUP_COPY[group].label}</h4>
+                    <p>{GROUP_COPY[group].description}</p>
+                  </div>
+                  <InstalledModelList
+                    installedModels={groupedModels[group]}
+                    deletingIds={deletingIds}
+                    onDelete={(modelId) => {
+                      void deleteInstalledModel(modelId);
+                    }}
+                  />
+                </section>
+              ),
+            )}
+          </div>
         )}
 
         {installedModels.length > 0 && (

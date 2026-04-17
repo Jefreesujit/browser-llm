@@ -1,9 +1,13 @@
 import type { InterruptableStoppingCriteria } from "@huggingface/transformers";
 import {
+  AutoModel,
   AutoModelForImageTextToText,
+  AutoModelForTextToSpectrogram,
   AutoProcessor,
+  AutoTokenizer,
   pipeline,
   Qwen3_5ForConditionalGeneration,
+  Tensor,
 } from "@huggingface/transformers";
 
 import type { ChatRole, ModelDescriptor, WorkerResponse } from "../types";
@@ -33,11 +37,39 @@ export type TextGeneratorInstance = {
     Array<{ generated_text: Array<{ role: string; content: string }> }>
   >;
 };
+export type SpeechRecognizerInstance = {
+  dispose?: () => Promise<unknown>;
+  (
+    audio: Float32Array,
+    options?: Record<string, unknown>,
+  ): Promise<{
+    text: string;
+    chunks?: Array<{ text: string; timestamp: [number, number] }>;
+  }>;
+};
+export type SpeechSynthesizerInstance = {
+  dispose?: () => Promise<unknown>;
+  (
+    text: string,
+    options?: Record<string, unknown>,
+  ): Promise<{ audio: Float32Array; sampling_rate: number }>;
+};
+
+type SpeechT5ModelInstance = {
+  dispose?: () => Promise<unknown>;
+  generate_speech: (
+    inputIds: unknown,
+    speakerEmbeddings: Tensor,
+    options: { vocoder: unknown },
+  ) => Promise<{ waveform: { data: Float32Array | ArrayLike<number> } }>;
+};
 
 type LoadResources = {
   textGenerator: TextGeneratorInstance | null;
   processor: ProcessorInstance | null;
   visionModel: VisionModelInstance | null;
+  speechRecognizer: SpeechRecognizerInstance | null;
+  speechSynthesizer: SpeechSynthesizerInstance | null;
 };
 
 export type SummaryResult = {
@@ -46,6 +78,8 @@ export type SummaryResult = {
 };
 
 export type WorkerMessagePoster = (message: WorkerResponse) => void;
+
+const DEFAULT_SPEECHT5_VOCODER_ID = "Xenova/speecht5_hifigan";
 
 const browserSupportsWebGpuFp16 = async () => {
   if (typeof navigator === "undefined" || !("gpu" in navigator)) {
@@ -60,7 +94,7 @@ const browserSupportsWebGpuFp16 = async () => {
   }
 };
 
-const isRecoverableTextLoadError = (error: unknown) => {
+const isRecoverableLoadError = (error: unknown) => {
   const message = error instanceof Error ? error.message : String(error);
   return /(q4f16|fp16|shader-f16|dtype|precision|not found|404|missing)/i.test(
     message,
@@ -85,6 +119,8 @@ export const createModelSession = (postMessageToUi: WorkerMessagePoster) => {
   let textGenerator: TextGeneratorInstance | null = null;
   let processor: ProcessorInstance | null = null;
   let visionModel: VisionModelInstance | null = null;
+  let speechRecognizer: SpeechRecognizerInstance | null = null;
+  let speechSynthesizer: SpeechSynthesizerInstance | null = null;
   let loadingPromise: Promise<void> | null = null;
   let loadingModelId: string | null = null;
   let latestLoadNonce = 0;
@@ -122,7 +158,15 @@ export const createModelSession = (postMessageToUi: WorkerMessagePoster) => {
     });
   };
 
-  const loadTextGenerator = async (model: ModelDescriptor) => {
+  const loadPipelineTask = async <
+    TInstance extends
+      | TextGeneratorInstance
+      | SpeechRecognizerInstance
+      | SpeechSynthesizerInstance,
+  >(
+    task: "text-generation" | "automatic-speech-recognition" | "text-to-speech",
+    model: ModelDescriptor,
+  ) => {
     const preferredDtype = model.runtime.preferredDtype ?? "q4f16";
     const fallbackDtype = model.runtime.fallbackDtype ?? null;
     const supportsFp16 = await browserSupportsWebGpuFp16();
@@ -137,11 +181,11 @@ export const createModelSession = (postMessageToUi: WorkerMessagePoster) => {
 
     for (const dtype of dtypeCandidates) {
       try {
-        return (await pipeline("text-generation", model.hf.modelId, {
+        return (await pipeline(task, model.hf.modelId, {
           device: "webgpu",
           dtype,
           progress_callback: getProgressHandler(model.id),
-        })) as TextGeneratorInstance;
+        })) as unknown as TInstance;
       } catch (error) {
         lastError = error;
       }
@@ -151,13 +195,157 @@ export const createModelSession = (postMessageToUi: WorkerMessagePoster) => {
       preferredDtype === "q4f16" &&
       fallbackDtype &&
       supportsFp16 &&
-      isRecoverableTextLoadError(lastError)
+      isRecoverableLoadError(lastError)
     ) {
-      return (await pipeline("text-generation", model.hf.modelId, {
+      return (await pipeline(task, model.hf.modelId, {
         device: "webgpu",
         dtype: fallbackDtype,
         progress_callback: getProgressHandler(model.id),
-      })) as TextGeneratorInstance;
+      })) as unknown as TInstance;
+    }
+
+    throw lastError;
+  };
+
+  const loadTextGenerator = async (model: ModelDescriptor) =>
+    loadPipelineTask<TextGeneratorInstance>("text-generation", model);
+
+  const loadSpeechRecognizer = async (model: ModelDescriptor) =>
+    loadPipelineTask<SpeechRecognizerInstance>(
+      "automatic-speech-recognition",
+      model,
+    );
+
+  const loadSpeechSynthesizer = async (model: ModelDescriptor) =>
+    loadPipelineTask<SpeechSynthesizerInstance>("text-to-speech", model);
+
+  const loadSupertonicSynthesizer = async (model: ModelDescriptor) =>
+    (await pipeline("text-to-speech", model.hf.modelId, {
+      device: "webgpu",
+      progress_callback: getProgressHandler(model.id),
+    })) as unknown as SpeechSynthesizerInstance;
+
+  const loadSpeechT5Synthesizer = async (model: ModelDescriptor) => {
+    const progressHandler = getProgressHandler(model.id);
+    const preferredDtype = model.runtime.preferredDtype ?? "q4";
+    const fallbackDtype = model.runtime.fallbackDtype ?? null;
+    const supportsFp16 = await browserSupportsWebGpuFp16();
+    const dtypeCandidates =
+      preferredDtype === "q4f16" && !supportsFp16
+        ? fallbackDtype
+          ? [fallbackDtype]
+          : []
+        : [preferredDtype];
+
+    let lastError: unknown = null;
+
+    for (const dtype of dtypeCandidates) {
+      try {
+        const [tokenizer, processor, spectrogramModel, vocoder] =
+          await Promise.all([
+            AutoTokenizer.from_pretrained(model.hf.modelId, {
+              progress_callback: progressHandler,
+            }),
+            AutoProcessor.from_pretrained(model.hf.modelId, {
+              progress_callback: progressHandler,
+            }),
+            AutoModelForTextToSpectrogram.from_pretrained(model.hf.modelId, {
+              device: "webgpu",
+              dtype,
+              progress_callback: progressHandler,
+            }),
+            AutoModel.from_pretrained(DEFAULT_SPEECHT5_VOCODER_ID, {
+              dtype: "fp32",
+              progress_callback: progressHandler,
+            }),
+          ]);
+        const speechT5Model =
+          spectrogramModel as unknown as SpeechT5ModelInstance;
+
+        const synthesizer = (async (
+          text: string,
+          options?: Record<string, unknown>,
+        ) => {
+          const rawSpeakerEmbeddings =
+            options?.speaker_embeddings ?? model.runtime.speakerEmbeddingsUrl;
+
+          if (
+            typeof rawSpeakerEmbeddings !== "string" &&
+            !(rawSpeakerEmbeddings instanceof URL) &&
+            !(rawSpeakerEmbeddings instanceof Float32Array)
+          ) {
+            throw new Error(
+              "SpeechT5 requires speaker embeddings before it can generate audio.",
+            );
+          }
+
+          const speakerEmbeddingsData =
+            typeof rawSpeakerEmbeddings === "string" ||
+            rawSpeakerEmbeddings instanceof URL
+              ? new Float32Array(
+                  await (
+                    await fetch(String(rawSpeakerEmbeddings))
+                  ).arrayBuffer(),
+                )
+              : rawSpeakerEmbeddings;
+
+          const { input_ids } = tokenizer(text, {
+            padding: true,
+            truncation: true,
+          });
+          const speakerEmbeddings = new Tensor(
+            "float32",
+            speakerEmbeddingsData,
+            [speakerEmbeddingsData.length],
+          ).view(1, -1);
+
+          const { waveform } = await speechT5Model.generate_speech(
+            input_ids,
+            speakerEmbeddings,
+            { vocoder },
+          );
+          const samplingRate =
+            processor.feature_extractor?.config?.sampling_rate ??
+            model.runtime.audioSampleRate ??
+            16000;
+
+          return {
+            audio:
+              waveform.data instanceof Float32Array
+                ? waveform.data
+                : new Float32Array(waveform.data),
+            sampling_rate: samplingRate,
+          };
+        }) as SpeechSynthesizerInstance;
+
+        synthesizer.dispose = async () => {
+          await Promise.allSettled([
+            spectrogramModel.dispose?.(),
+            vocoder.dispose?.(),
+          ]);
+        };
+
+        return synthesizer;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+
+    if (
+      preferredDtype === "q4f16" &&
+      fallbackDtype &&
+      supportsFp16 &&
+      isRecoverableLoadError(lastError)
+    ) {
+      const fallbackModel = {
+        ...model,
+        runtime: {
+          ...model.runtime,
+          preferredDtype: fallbackDtype,
+          fallbackDtype: undefined,
+        },
+      };
+      return loadSpeechT5Synthesizer(fallbackModel);
     }
 
     throw lastError;
@@ -167,14 +355,24 @@ export const createModelSession = (postMessageToUi: WorkerMessagePoster) => {
     await Promise.allSettled([
       resources.textGenerator?.dispose?.(),
       resources.visionModel?.dispose?.(),
+      resources.speechRecognizer?.dispose?.(),
+      resources.speechSynthesizer?.dispose?.(),
     ]);
   };
 
   const disposeCurrentModel = async () => {
-    await disposeResources({ textGenerator, processor, visionModel });
+    await disposeResources({
+      textGenerator,
+      processor,
+      visionModel,
+      speechRecognizer,
+      speechSynthesizer,
+    });
     textGenerator = null;
     processor = null;
     visionModel = null;
+    speechRecognizer = null;
+    speechSynthesizer = null;
     activeModelId = null;
   };
 
@@ -201,6 +399,8 @@ export const createModelSession = (postMessageToUi: WorkerMessagePoster) => {
         textGenerator: null,
         processor: nextProcessor,
         visionModel: nextVisionModel as VisionModelInstance,
+        speechRecognizer: null,
+        speechSynthesizer: null,
       } satisfies LoadResources;
     }
 
@@ -224,6 +424,8 @@ export const createModelSession = (postMessageToUi: WorkerMessagePoster) => {
         textGenerator: null,
         processor: nextProcessor,
         visionModel: nextVisionModel as VisionModelInstance,
+        speechRecognizer: null,
+        speechSynthesizer: null,
       } satisfies LoadResources;
     }
 
@@ -232,10 +434,38 @@ export const createModelSession = (postMessageToUi: WorkerMessagePoster) => {
     );
   };
 
+  const loadAudioResources = async (model: ModelDescriptor) => {
+    if (model.task === "stt") {
+      return {
+        textGenerator: null,
+        processor: null,
+        visionModel: null,
+        speechRecognizer: await loadSpeechRecognizer(model),
+        speechSynthesizer: null,
+      } satisfies LoadResources;
+    }
+
+    return {
+      textGenerator: null,
+      processor: null,
+      visionModel: null,
+      speechRecognizer: null,
+      speechSynthesizer:
+        model.runtime.audioLoaderKind === "speecht5_tts"
+          ? await loadSpeechT5Synthesizer(model)
+          : model.runtime.audioLoaderKind === "supertonic_tts"
+            ? await loadSupertonicSynthesizer(model)
+          : await loadSpeechSynthesizer(model),
+    } satisfies LoadResources;
+  };
+
   const ensureModelReady = async (model: ModelDescriptor) => {
     if (
       activeModelId === model.id &&
-      (textGenerator || (processor && visionModel))
+      (textGenerator ||
+        (processor && visionModel) ||
+        speechRecognizer ||
+        speechSynthesizer)
     ) {
       return;
     }
@@ -259,8 +489,12 @@ export const createModelSession = (postMessageToUi: WorkerMessagePoster) => {
               textGenerator: await loadTextGenerator(model),
               processor: null,
               visionModel: null,
+              speechRecognizer: null,
+              speechSynthesizer: null,
             } satisfies LoadResources)
-          : await loadVisionResources(model);
+          : model.task === "vision"
+            ? await loadVisionResources(model)
+            : await loadAudioResources(model);
 
       if (resources.textGenerator) {
         assertChatTemplate(model, resources.textGenerator);
@@ -275,6 +509,8 @@ export const createModelSession = (postMessageToUi: WorkerMessagePoster) => {
       textGenerator = resources.textGenerator;
       processor = resources.processor;
       visionModel = resources.visionModel;
+      speechRecognizer = resources.speechRecognizer;
+      speechSynthesizer = resources.speechSynthesizer;
       activeModelId = model.id;
     })();
 
@@ -297,6 +533,8 @@ export const createModelSession = (postMessageToUi: WorkerMessagePoster) => {
     getTextGenerator: () => textGenerator,
     getProcessor: () => processor,
     getVisionModel: () => visionModel,
+    getSpeechRecognizer: () => speechRecognizer,
+    getSpeechSynthesizer: () => speechSynthesizer,
     assertChatTemplate,
     setActiveStoppingCriteria: (
       criteria: InterruptableStoppingCriteria | null,

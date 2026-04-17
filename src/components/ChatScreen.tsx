@@ -17,13 +17,12 @@ import ChatHistorySidebar from "./ChatHistorySidebar";
 type ChatScreenProps = {
   threads: ChatThread[];
   activeThreadId: string | null;
+  activeThreadTitle: string;
   selectedModel: ModelDescriptor;
   appState: ModelLoadState;
   messages: ChatMessage[];
   input: string;
   progress: ModelLoadProgress;
-  progressWidth: string;
-  progressClassName: string;
   error: string | null;
   isGenerating: boolean;
   draftAttachment: DraftAttachment | null;
@@ -34,7 +33,6 @@ type ChatScreenProps = {
   onSelectThread: (threadId: string) => void;
   onDeleteThread: (threadId: string) => void;
   onChangeModel: () => void;
-  onOpenSettings: () => void;
   onInputChange: (value: string) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onComposerKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
@@ -48,13 +46,12 @@ type ChatScreenProps = {
 function ChatScreen({
   threads,
   activeThreadId,
+  activeThreadTitle,
   selectedModel,
   appState,
   messages,
   input,
   progress,
-  progressWidth,
-  progressClassName,
   error,
   isGenerating,
   draftAttachment,
@@ -65,7 +62,6 @@ function ChatScreen({
   onSelectThread,
   onDeleteThread,
   onChangeModel,
-  onOpenSettings,
   onInputChange,
   onSubmit,
   onComposerKeyDown,
@@ -99,67 +95,58 @@ function ChatScreen({
   const modelFlags = getModelFlags(selectedModel);
 
   return (
-    <main className="shell">
-      <section className="panel app-panel chat-workspace-panel">
-        <div className={progressClassName} aria-hidden="true">
-          <div
-            className="panel-progress-fill"
-            style={{ width: progressWidth }}
+    <section className="panel app-panel chat-workspace-panel">
+      <div className="chat-workspace-content">
+        <ChatHistorySidebar
+          threads={threads}
+          activeThreadId={activeThreadId}
+          disableMutations={isGenerating}
+          storageWarning={storageWarning}
+          onCreateThread={onCreateThread}
+          onSelectThread={onSelectThread}
+          onDeleteThread={onDeleteThread}
+        />
+
+        <div className="chat-main">
+          <ChatToolbar
+            title={activeThreadTitle}
+            selectedModel={selectedModel}
+            modelStatus={modelStatus}
+            modelFlags={modelFlags}
+            isGenerating={isGenerating}
+            onChangeModel={onChangeModel}
+          />
+
+          <ChatMessageList
+            messages={messages}
+            appState={appState}
+            isGenerating={isGenerating}
+            starterPrompts={starterPrompts}
+            chatLogRef={chatLogRef}
+            onInputChange={onInputChange}
+            onChatScroll={onChatScroll}
+          />
+
+          <ChatComposer
+            isVisionMode={isVisionMode}
+            appState={appState}
+            isGenerating={isGenerating}
+            stopRequested={stopRequested}
+            input={input}
+            error={error}
+            progress={progress}
+            draftAttachment={draftAttachment}
+            fileInputRef={fileInputRef}
+            onSubmit={onSubmit}
+            onComposerKeyDown={onComposerKeyDown}
+            onInputChange={onInputChange}
+            onFileChange={onFileChange}
+            onRemoveAttachment={onRemoveAttachment}
+            onStopGeneration={onStopGeneration}
           />
         </div>
-
-        <div className="chat-workspace-content">
-          <ChatHistorySidebar
-            threads={threads}
-            activeThreadId={activeThreadId}
-            disableMutations={isGenerating}
-            storageWarning={storageWarning}
-            onCreateThread={onCreateThread}
-            onSelectThread={onSelectThread}
-            onDeleteThread={onDeleteThread}
-          />
-
-          <div className="chat-main">
-            <ChatToolbar
-              selectedModel={selectedModel}
-              modelStatus={modelStatus}
-              modelFlags={modelFlags}
-              isGenerating={isGenerating}
-              onChangeModel={onChangeModel}
-              onOpenSettings={onOpenSettings}
-            />
-
-            <ChatMessageList
-              messages={messages}
-              appState={appState}
-              isGenerating={isGenerating}
-              starterPrompts={starterPrompts}
-              chatLogRef={chatLogRef}
-              onInputChange={onInputChange}
-              onChatScroll={onChatScroll}
-            />
-
-            <ChatComposer
-              isVisionMode={isVisionMode}
-              appState={appState}
-              isGenerating={isGenerating}
-              stopRequested={stopRequested}
-              input={input}
-              error={error}
-              progress={progress}
-              draftAttachment={draftAttachment}
-              fileInputRef={fileInputRef}
-              onSubmit={onSubmit}
-              onComposerKeyDown={onComposerKeyDown}
-              onInputChange={onInputChange}
-              onFileChange={onFileChange}
-              onRemoveAttachment={onRemoveAttachment}
-              onStopGeneration={onStopGeneration}
-            />
-          </div>
-        </div>
-      </section>
-    </main>
+      </div>
+    </section>
   );
 }
 

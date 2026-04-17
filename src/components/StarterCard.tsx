@@ -20,6 +20,14 @@ const getStarterMeta = (model: ModelDescriptor) => {
     return "Vision";
   }
 
+  if (model.task === "stt") {
+    return "Transcribe";
+  }
+
+  if (model.task === "tts") {
+    return "Speech";
+  }
+
   if (model.category === "balanced") {
     return "Balanced";
   }

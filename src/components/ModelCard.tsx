@@ -22,7 +22,18 @@ const getModelMetaLabel = (model: ModelDescriptor) => {
     return "Vision";
   }
 
-  if (model.category === "desktop_experimental") {
+  if (model.task === "stt") {
+    return "Transcribe";
+  }
+
+  if (model.task === "tts") {
+    return "Speak";
+  }
+
+  if (
+    model.category === "desktop_experimental" ||
+    model.category === "audio_desktop_experimental"
+  ) {
     return "Experimental";
   }
 
@@ -33,7 +44,13 @@ const getModelMetaLabel = (model: ModelDescriptor) => {
   return "General";
 };
 
-function ModelCard({ model, compatibility, onLoad, disabled = false, loading = false }: ModelCardProps) {
+function ModelCard({
+  model,
+  compatibility,
+  onLoad,
+  disabled = false,
+  loading = false,
+}: ModelCardProps) {
   return (
     <article className="model-card">
       <div className="model-card-header">

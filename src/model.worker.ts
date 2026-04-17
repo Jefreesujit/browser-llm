@@ -1,9 +1,20 @@
 import type { WorkerRequest, WorkerResponse } from "./types";
-import { generateTextReply, generateVisionReply } from "./worker/generation";
+import {
+  generateSpeech,
+  generateTextReply,
+  generateTranscription,
+  generateVisionReply,
+} from "./worker/generation";
 import { createModelSession } from "./worker/model-session";
 
-const postMessageToUi = (message: WorkerResponse) => {
-  self.postMessage(message);
+const postMessageToUi = (
+  message: WorkerResponse,
+  transfer?: Transferable[],
+) => {
+  const workerScope = self as unknown as {
+    postMessage: (value: WorkerResponse, transfer?: Transferable[]) => void;
+  };
+  workerScope.postMessage(message, transfer ?? []);
 };
 
 const postError = (
@@ -21,7 +32,7 @@ const postError = (
     payload: { modelId, message, threadId, requestId },
   });
 
-  if (!threadId || !requestId) {
+  if (!threadId && !requestId) {
     postMessageToUi({
       type: "MODEL_LOAD_RESULT",
       payload: { modelId, status: "failed_on_device", message },
@@ -107,6 +118,72 @@ self.addEventListener("message", async (event: MessageEvent<WorkerRequest>) => {
     }
     case "STOP_GENERATION": {
       session.interruptGeneration();
+      break;
+    }
+    case "TRANSCRIBE_AUDIO": {
+      const { requestId, model, audio, returnTimestamps, durationSec } =
+        event.data.payload;
+
+      try {
+        const result = await generateTranscription({
+          session,
+          postMessageToUi,
+          model,
+          audio,
+          requestId,
+          returnTimestamps,
+        });
+
+        postMessageToUi({
+          type: "TRANSCRIPTION_DONE",
+          payload: {
+            requestId,
+            modelId: model.id,
+            text: result.text,
+            chunks: result.chunks,
+            durationSec,
+          },
+        });
+      } catch (error) {
+        postError(model.id, error, undefined, requestId);
+      }
+      break;
+    }
+    case "SYNTHESIZE_SPEECH": {
+      const { requestId, model, text, voice, speed } = event.data.payload;
+
+      try {
+        const result = await generateSpeech({
+          session,
+          postMessageToUi,
+          model,
+          requestId,
+          text,
+          voice,
+          speed,
+        });
+        const audioBuffer = new Uint8Array(
+          result.audio.buffer,
+          result.audio.byteOffset,
+          result.audio.byteLength,
+        ).slice().buffer;
+
+        postMessageToUi(
+          {
+            type: "SPEECH_DONE",
+            payload: {
+              requestId,
+              modelId: model.id,
+              audioBuffer,
+              sampleRate: result.sampleRate,
+              durationSec: result.audio.length / result.sampleRate,
+            },
+          },
+          [audioBuffer],
+        );
+      } catch (error) {
+        postError(model.id, error, undefined, requestId);
+      }
       break;
     }
   }

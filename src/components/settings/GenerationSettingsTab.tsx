@@ -22,66 +22,70 @@ function GenerationSettingsTab({
 
   return (
     <div className="settings-section">
-      <div className="settings-field">
-        <div className="settings-field-header">
-          <label
-            htmlFor="settings-temperature"
-            className="settings-field-label"
-          >
-            Temperature
-          </label>
-          <span className="settings-field-value">
-            {draft.temperature.toFixed(2)}
-          </span>
+      <div className="settings-inline-grid">
+        <div className="settings-field">
+          <div className="settings-field-header">
+            <label
+              htmlFor="settings-temperature"
+              className="settings-field-label"
+            >
+              Temperature
+            </label>
+            <span className="settings-field-value">
+              {draft.temperature.toFixed(2)}
+            </span>
+          </div>
+          <p className="settings-field-description">
+            Lower values keep responses tighter. Higher values make outputs
+            more varied.
+          </p>
+          <input
+            id="settings-temperature"
+            className="settings-slider"
+            type="range"
+            min={0}
+            max={2}
+            step={0.01}
+            value={draft.temperature}
+            onChange={(event) =>
+              onChange({ temperature: parseFloat(event.target.value) })
+            }
+          />
+          <div className="settings-slider-labels">
+            <span>Focused</span>
+            <span>Creative</span>
+          </div>
         </div>
-        <p className="settings-field-description">
-          Lower values keep responses tighter. Higher values make outputs more
-          varied.
-        </p>
-        <input
-          id="settings-temperature"
-          className="settings-slider"
-          type="range"
-          min={0}
-          max={2}
-          step={0.01}
-          value={draft.temperature}
-          onChange={(event) =>
-            onChange({ temperature: parseFloat(event.target.value) })
-          }
-        />
-        <div className="settings-slider-labels">
-          <span>Focused</span>
-          <span>Creative</span>
-        </div>
-      </div>
 
-      <div className="settings-field">
-        <div className="settings-field-header">
-          <label htmlFor="settings-top-p" className="settings-field-label">
-            Top-P
-          </label>
-          <span className="settings-field-value">{draft.topP.toFixed(2)}</span>
-        </div>
-        <p className="settings-field-description">
-          Limits sampling to the highest-probability tokens until the cumulative
-          mass reaches P.
-        </p>
-        <input
-          id="settings-top-p"
-          className="settings-slider"
-          type="range"
-          min={0.01}
-          max={1}
-          step={0.01}
-          value={draft.topP}
-          onChange={(event) =>
-            onChange({ topP: parseFloat(event.target.value) })
-          }
-        />
-        <div className="settings-slider-labels">
-          <span>Tight</span>
-          <span>Open</span>
+        <div className="settings-field">
+          <div className="settings-field-header">
+            <label htmlFor="settings-top-p" className="settings-field-label">
+              Top-P
+            </label>
+            <span className="settings-field-value">
+              {draft.topP.toFixed(2)}
+            </span>
+          </div>
+          <p className="settings-field-description">
+            Limits sampling to the highest-probability tokens until the
+            cumulative mass reaches P.
+          </p>
+          <input
+            id="settings-top-p"
+            className="settings-slider"
+            type="range"
+            min={0.01}
+            max={1}
+            step={0.01}
+            value={draft.topP}
+            onChange={(event) =>
+              onChange({ topP: parseFloat(event.target.value) })
+            }
+          />
+          <div className="settings-slider-labels">
+            <span>Tight</span>
+            <span>Open</span>
+          </div>
         </div>
       </div>
 

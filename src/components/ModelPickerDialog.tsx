@@ -1,7 +1,6 @@
 import { useDeferredValue } from "react";
 
 import { useDialogScrollLock } from "../hooks/useDialogScrollLock";
-import type { CuratedCategory } from "../models";
 import type {
   CompatibilityReport,
   ModelDescriptor,
@@ -11,7 +10,11 @@ import type {
 import ModelCard from "./ModelCard";
 
 type CategorizedModel = {
-  category: CuratedCategory;
+  category: {
+    key: string;
+    label: string;
+    description: string;
+  };
   models: Array<{ model: ModelDescriptor; compatibility: CompatibilityReport }>;
 };
 
@@ -32,6 +35,7 @@ type ModelPickerDialogProps = {
   searchLoading: boolean;
   searchError: string | null;
   loadingModelId: string | null;
+  availableTabs?: PickerTab[];
   onClose: () => void;
   onTabChange: (tab: PickerTab) => void;
   onSearchQueryChange: (value: string) => void;
@@ -63,6 +67,7 @@ function ModelPickerDialog({
   searchLoading,
   searchError,
   loadingModelId,
+  availableTabs = ["curated", "search", "recent"],
   onClose,
   onTabChange,
   onSearchQueryChange,
@@ -99,7 +104,7 @@ function ModelPickerDialog({
         </header>
 
         <div className="dialog-tabs" role="tablist" aria-label="Model tabs">
-          {(Object.keys(TAB_LABELS) as PickerTab[]).map((tab) => (
+          {availableTabs.map((tab) => (
             <button
               key={tab}
               className={`dialog-tab ${tab === activeTab ? "dialog-tab-active" : ""}`}

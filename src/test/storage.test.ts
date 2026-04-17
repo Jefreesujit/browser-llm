@@ -1,6 +1,15 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
-import { deriveStorageFeedback, getDefaultStorageMessage } from "../storage";
+import {
+  deriveStorageFeedback,
+  getDefaultStorageMessage,
+  loadLastAudioView,
+  saveLastAudioView,
+} from "../storage";
+
+afterEach(() => {
+  window.localStorage.clear();
+});
 
 describe("storage feedback helpers", () => {
   it("reports localStorage fallback when writes succeed on fallback storage", () => {
@@ -27,5 +36,18 @@ describe("storage feedback helpers", () => {
       status: "unavailable",
       warning: "Browser storage is blocked in this session.",
     });
+  });
+
+  it("persists the last audio view independently", () => {
+    saveLastAudioView("speak");
+    expect(loadLastAudioView()).toBe("speak");
+  });
+
+  it("falls back to the legacy audio tab when no audio view is stored", () => {
+    window.localStorage.setItem(
+      "webllm:last-audio-tab",
+      JSON.stringify("speak"),
+    );
+    expect(loadLastAudioView()).toBe("speak");
   });
 });
