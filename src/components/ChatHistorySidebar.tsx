@@ -10,33 +10,44 @@ type ChatHistorySidebarProps = {
   onDeleteThread: (threadId: string) => void;
 };
 
-const formatRelativeDate = (value: string) => {
+export const formatRelativeDate = (value: string) => {
   const timestamp = Date.parse(value);
   if (Number.isNaN(timestamp)) {
     return "";
   }
 
-  const diffMinutes = Math.max(0, Math.round((Date.now() - timestamp) / 60000));
+  const diffMinutes = Math.max(0, Math.floor((Date.now() - timestamp) / 60000));
 
   if (diffMinutes < 1) {
-    return "Just now";
+    return "now";
   }
 
   if (diffMinutes < 60) {
-    return `${diffMinutes}m ago`;
+    return `${diffMinutes}m`;
   }
 
-  const diffHours = Math.round(diffMinutes / 60);
+  const diffHours = Math.floor(diffMinutes / 60);
   if (diffHours < 24) {
-    return `${diffHours}h ago`;
+    return `${diffHours}h`;
   }
 
-  const diffDays = Math.round(diffHours / 24);
-  if (diffDays < 7) {
-    return `${diffDays}d ago`;
+  const diffDays = Math.floor(diffHours / 24);
+  if (diffDays < 7 && diffDays > 0) {
+    return `${diffDays}d`;
   }
 
-  return new Date(timestamp).toLocaleDateString();
+  const diffWeeks = Math.floor(diffDays / 7);
+  if (diffWeeks < 5) {
+    return `${diffWeeks}w`;
+  }
+
+  const diffMonths = Math.floor(diffDays / 30);
+  if (diffMonths < 12) {
+    return `${diffMonths}mo`;
+  }
+
+  const diffYears = Math.floor(diffDays / 365);
+  return `${Math.max(1, diffYears)}y`;
 };
 
 function ChatHistorySidebar({
