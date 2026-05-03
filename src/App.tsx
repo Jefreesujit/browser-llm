@@ -2,6 +2,10 @@ import type { ChangeEvent, FormEvent, KeyboardEvent } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
+  EMPTY_TRANSCRIPTION_MESSAGE,
+  normalizeTranscriptionText,
+} from "./app/audio-helpers";
+import {
   applyAssistantContent,
   computeGenerationOptions,
   createDefaultThreadUiState,
@@ -58,6 +62,7 @@ import {
   loadLastAudioTab,
   loadLastSttModel,
   loadLastTtsModel,
+  loadLastWorkspace,
   pushRecentModel,
   saveActiveChatThreadId,
   saveAppSettings,
@@ -66,6 +71,7 @@ import {
   saveLastModel,
   saveLastSttModel,
   saveLastTtsModel,
+  saveLastWorkspace,
   savePickerTab,
   saveRecentModels,
   saveShowExperimental,
@@ -91,6 +97,12 @@ import { DEFAULT_APP_SETTINGS } from "./types";
 const RECORDING_WAVE_BAR_COUNT = 20;
 const GITHUB_URL = "https://github.com/Jefreesujit/browser-llm";
 const MOBILE_LAYOUT_QUERY = "(max-width: 720px)";
+const PREFERRED_RECORDING_MIME_TYPES = [
+  "audio/webm;codecs=opus",
+  "audio/webm",
+  "audio/mp4",
+  "audio/ogg;codecs=opus",
+] as const;
 
 function App() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -118,7 +130,9 @@ function App() {
   >({});
   const uiStateFlushTimerRef = useRef<number | null>(null);
   const threadOpenNonceRef = useRef(0);
-  const [workspace, setWorkspace] = useState<WorkspaceMode>("chat");
+  const [workspace, setWorkspace] = useState<WorkspaceMode>(() =>
+    loadLastWorkspace(),
+  );
   const [audioView, setAudioView] = useState<AudioView>(() =>
     loadLastAudioView(),
   );
@@ -538,10 +552,18 @@ function App() {
           return;
         }
 
-        setTranscriptText(event.data.payload.text);
-        setTranscriptChunks(event.data.payload.chunks ?? []);
+        const transcriptChunks = event.data.payload.chunks ?? [];
+        const transcriptText = normalizeTranscriptionText(
+          event.data.payload.text,
+          transcriptChunks,
+        );
+
+        setTranscriptText(transcriptText);
+        setTranscriptChunks(transcriptChunks);
         setAudioTaskBusy(false);
-        setAudioTaskStatus(null);
+        setAudioTaskStatus(
+          transcriptText ? null : EMPTY_TRANSCRIPTION_MESSAGE,
+        );
         audioRequestIdRef.current = null;
         break;
       }
@@ -865,6 +887,10 @@ function App() {
   useEffect(() => {
     saveLastAudioView(audioView);
   }, [audioView]);
+
+  useEffect(() => {
+    saveLastWorkspace(workspace);
+  }, [workspace]);
 
   useEffect(() => {
     const voices = selectedTtsModel.runtime.voices ?? [];
@@ -1383,52 +1409,76 @@ function App() {
     }
   };
 
-  const activateModel = async (model: ModelDescriptor) => {
+  const activateModel = async (
+    model: ModelDescriptor,
+    mode: "auto" | "same-thread" | "new-thread" = "auto",
+  ) => {
     setLoadingModelId(model.id);
     setError(null);
     setWorkspace("chat");
 
     try {
       const resolvedModel = await resolveSelectedModel(model);
+      const nextModel = stripModelCompatibility(resolvedModel);
       const shouldReuseActiveThread = Boolean(
         activeThread && activeMessages.length === 0 && !isGenerating,
       );
-      const nextThread = shouldReuseActiveThread
-        ? {
-            ...activeThread!,
-            ...createThreadRecord(stripModelCompatibility(resolvedModel)),
-            id: activeThread!.id,
-            createdAt: activeThread!.createdAt,
-          }
-        : createThreadRecord(stripModelCompatibility(resolvedModel));
-      const uiState =
-        threadUiStates[nextThread.id] ??
-        createDefaultThreadUiState(nextThread.id);
 
-      shouldStickToBottomRef.current = true;
-      upsertThread(nextThread);
-      replaceThreadMessages(nextThread.id, []);
-      setThreadUiStates({
-        ...useAppStore.getState().threadUiStates,
-        [nextThread.id]: uiState,
-      });
-      setActiveThreadId(nextThread.id);
-      saveActiveChatThreadId(nextThread.id);
-      setSelectedModel(nextThread.model);
-      setPickerOpen(false);
-      setPendingModel(null);
-      clearDraftAttachment();
-      setError(null);
-      pendingScrollRestoreRef.current = 0;
+      if (mode === "same-thread" && activeThread) {
+        const nextThread = {
+          ...activeThread,
+          model: nextModel,
+          updatedAt: new Date().toISOString(),
+        };
 
-      if (chatStoreRef.current) {
-        const threadResult = await chatStoreRef.current.putThread(nextThread);
-        const messagesResult = await chatStoreRef.current.putMessages(
-          nextThread.id,
-          [],
-        );
-        const uiResult = await chatStoreRef.current.putUiState(uiState);
-        handleStorageWriteResults(threadResult, messagesResult, uiResult);
+        upsertThread(nextThread);
+        setSelectedModel(nextThread.model);
+        setPickerOpen(false);
+        setPendingModel(null);
+        setError(null);
+
+        if (chatStoreRef.current) {
+          await persistThreadSnapshotNow(nextThread, activeMessages);
+        }
+      } else {
+        const nextThread =
+          mode === "new-thread" || !shouldReuseActiveThread
+            ? createThreadRecord(nextModel)
+            : {
+                ...activeThread!,
+                ...createThreadRecord(nextModel),
+                id: activeThread!.id,
+                createdAt: activeThread!.createdAt,
+              };
+        const uiState =
+          threadUiStates[nextThread.id] ??
+          createDefaultThreadUiState(nextThread.id);
+
+        shouldStickToBottomRef.current = true;
+        upsertThread(nextThread);
+        replaceThreadMessages(nextThread.id, []);
+        setThreadUiStates({
+          ...useAppStore.getState().threadUiStates,
+          [nextThread.id]: uiState,
+        });
+        setActiveThreadId(nextThread.id);
+        saveActiveChatThreadId(nextThread.id);
+        setSelectedModel(nextThread.model);
+        setPickerOpen(false);
+        setPendingModel(null);
+        clearDraftAttachment();
+        setError(null);
+        pendingScrollRestoreRef.current = 0;
+
+        if (chatStoreRef.current) {
+          const threadResult = await chatStoreRef.current.putThread(nextThread);
+          const messagesResult = await chatStoreRef.current.putMessages(
+            nextThread.id,
+            [],
+          );
+          const uiResult = await chatStoreRef.current.putUiState(uiState);
+          handleStorageWriteResults(threadResult, messagesResult, uiResult);
+        }
       }
     } catch (selectionIssue) {
       setLoadingModelId(null);
@@ -1568,7 +1618,14 @@ function App() {
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const recorder = new MediaRecorder(stream);
+      const mimeType = PREFERRED_RECORDING_MIME_TYPES.find((candidate) =>
+        typeof MediaRecorder.isTypeSupported === "function"
+          ? MediaRecorder.isTypeSupported(candidate)
+          : false,
+      );
+      const recorder = mimeType
+        ? new MediaRecorder(stream, { mimeType })
+        : new MediaRecorder(stream);
       recordingChunksRef.current = [];
       mediaStreamRef.current = stream;
       mediaRecorderRef.current = recorder;
@@ -1591,7 +1648,7 @@ function App() {
         mediaStreamRef.current = null;
         mediaRecorderRef.current = null;
         setIsRecording(false);
-        void transcribeAudioBlob(blob, "microphone-recording.webm");
+        void transcribeAudioBlob(blob, "microphone recording");
       });
 
       recorder.start();
@@ -2200,8 +2257,8 @@ function App() {
             <p className="section-label">Change Model</p>
             <h2>Start a new chat with this model?</h2>
             <p className="confirm-copy">
-              Switching models starts a new conversation with{" "}
-              <strong>{pendingModel.label}</strong>.
+              Choose whether <strong>{pendingModel.label}</strong> should keep
+              this conversation going or start a separate thread.
             </p>
             <div className="confirm-actions">
               <button
@@ -2215,7 +2272,16 @@ function App() {
                 className="primary-button"
                 type="button"
                 onClick={() => {
-                  void activateModel(pendingModel);
+                  void activateModel(pendingModel, "same-thread");
+                }}
+              >
+                Continue Same Chat
+              </button>
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={() => {
+                  void activateModel(pendingModel, "new-thread");
                 }}
               >
                 Start New Chat

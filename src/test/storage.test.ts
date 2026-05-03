@@ -4,7 +4,9 @@ import {
   deriveStorageFeedback,
   getDefaultStorageMessage,
   loadLastAudioView,
+  loadLastWorkspace,
   saveLastAudioView,
+  saveLastWorkspace,
 } from "../storage";
 
 afterEach(() => {
@@ -49,5 +51,10 @@ describe("storage feedback helpers", () => {
       JSON.stringify("speak"),
     );
     expect(loadLastAudioView()).toBe("speak");
+  });
+
+  it("restores the last workspace after refresh", () => {
+    saveLastWorkspace("audio");
+    expect(loadLastWorkspace()).toBe("audio");
   });
 });

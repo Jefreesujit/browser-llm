@@ -10,6 +10,7 @@ import type {
   ModelDescriptor,
   PickerTab,
   StorageWriteResult,
+  WorkspaceMode,
 } from "./types";
 import { DEFAULT_APP_SETTINGS } from "./types";
 
@@ -18,6 +19,7 @@ const LAST_STT_MODEL_KEY = "webllm:last-stt-model";
 const LAST_TTS_MODEL_KEY = "webllm:last-tts-model";
 const LAST_AUDIO_TAB_KEY = "webllm:last-audio-tab";
 const LAST_AUDIO_VIEW_KEY = "webllm:last-audio-view";
+const LAST_WORKSPACE_KEY = "webllm:last-workspace";
 const RECENT_MODELS_KEY = "webllm:recent-models";
 const PICKER_TAB_KEY = "webllm:picker-tab";
 const SHOW_EXPERIMENTAL_KEY = "webllm:show-experimental";
@@ -183,6 +185,16 @@ export const saveLastAudioView = (view: AudioView) =>
   writeJson(LAST_AUDIO_VIEW_KEY, view);
 export const clearLastAudioView = () => removeValue(LAST_AUDIO_VIEW_KEY);
 
+export const loadLastWorkspace = () => {
+  const stored = readJson<WorkspaceMode | null>(LAST_WORKSPACE_KEY, null);
+  return stored === "audio" ? "audio" : "chat";
+};
+
+export const saveLastWorkspace = (workspace: WorkspaceMode) =>
+  writeJson(LAST_WORKSPACE_KEY, workspace);
+
+export const clearLastWorkspace = () => removeValue(LAST_WORKSPACE_KEY);
+
 export const loadRecentModels = () =>
   readJson<ModelDescriptor[]>(RECENT_MODELS_KEY, []).map((model) =>
     canonicalizeStoredModel(model),
@@ -259,6 +271,7 @@ export const clearLightweightAppState = () => {
     clearLastTtsModel(),
     clearLastAudioTab(),
     clearLastAudioView(),
+    clearLastWorkspace(),
     clearRecentModels(),
     clearModelVerdictCache(),
     removeValue(PICKER_TAB_KEY),

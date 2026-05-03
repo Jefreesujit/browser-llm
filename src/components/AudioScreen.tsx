@@ -100,6 +100,8 @@ function AudioScreen({
   onDownloadAudio,
 }: AudioScreenProps) {
   const interactionLocked = taskBusy || isRecording;
+  const canGenerateSpeech =
+    appState === "ready" && !taskBusy && !isRecording && speakText.trim().length > 0;
   const modelStatus = error
     ? {
         label: "Failed",
@@ -125,12 +127,21 @@ function AudioScreen({
     typeof progress?.progress === "number"
       ? `${Math.round(progress.progress)}%`
       : null;
-  const modelLoadingLabel =
-    appState !== "ready" ? `Loading ${selectedModel.label}` : null;
-  const transcribeBusyLabel = isRecording
-    ? "Recording from microphone"
-    : (taskStatus ?? modelLoadingLabel ?? "Preparing transcription");
-  const speakBusyLabel = taskStatus ?? modelLoadingLabel ?? "Generating speech";
+  const isTranscriptionProcessing = taskBusy && activeTab === "transcribe";
+  const isSpeechGenerating = taskBusy && activeTab === "speak";
+  const transcribePlaceholder = isRecording
+    ? "Recording in progress. Stop recording to generate the transcript."
+    : taskBusy
+      ? progressLabel
+        ? `${progressLabel} downloaded`
+        : "Transcription is processing. The transcript will appear here once it finishes."
+      : taskStatus ?? "No transcript yet. Record audio or upload a file to get started.";
+  const speechOutputPlaceholder = taskBusy
+    ? "Speech generation is in progress. Your audio preview will appear here when it is ready."
+    : "No generated speech yet. Paste some text and generate audio.";
+  const generateSpeechLabel = taskBusy ? "Generating..." : "Generate Speech";
+  const waveformHeightForLevel = (level: number) =>
+    `${Math.min(100, Math.max(24, Math.round(level * 180)))}%`;
 
   return (
     <section className="panel app-panel audio-workspace-panel">
@@ -198,130 +209,125 @@ function AudioScreen({
           </button>
         </div>
 
-        {taskStatus && <p className="audio-task-status">{taskStatus}</p>}
         {error && <p className="audio-task-error">{error}</p>}
 
         {activeTab === "transcribe" ? (
           <section className="audio-content-grid">
             <div className="audio-panel-card">
-              <p className="section-label">Input</p>
-              <h2>Record or upload audio</h2>
-              <p className="audio-panel-copy">
-                Use your microphone or upload an audio file. The transcript
-                stays in your browser.
-              </p>
-
-              <div className="audio-input-actions">
-                {isRecording ? (
-                  <button
-                    className="danger-button"
-                    type="button"
-                    onClick={onStopRecording}
-                  >
-                    Stop Recording
-                  </button>
-                ) : (
-                  <button
-                    className="primary-button"
-                    type="button"
-                    onClick={onStartRecording}
-                    disabled={appState !== "ready" || interactionLocked}
-                  >
-                    Record with Microphone
-                  </button>
-                )}
-                <button
-                  className="secondary-button"
-                  type="button"
-                  onClick={onBrowseAudio}
-                  disabled={appState !== "ready" || interactionLocked}
-                >
-                  Upload Audio
-                </button>
+              <div className="audio-panel-header">
+                <div className="audio-panel-header-copy">
+                  <p className="section-label">Input</p>
+                  <h2>Audio input</h2>
+                </div>
+                <div className="audio-panel-actions">
+                  {isRecording ? (
+                    <button
+                      className="primary-button"
+                      type="button"
+                      onClick={onStopRecording}
+                    >
+                      Stop Recording
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        className="primary-button"
+                        type="button"
+                        onClick={onStartRecording}
+                        disabled={appState !== "ready" || interactionLocked}
+                      >
+                        Record
+                      </button>
+                      <button
+                        className="secondary-button"
+                        type="button"
+                        onClick={onBrowseAudio}
+                        disabled={appState !== "ready" || interactionLocked}
+                      >
+                        Upload
+                      </button>
+                    </>
+                  )}
+                </div>
               </div>
 
-              <div className="audio-source-stage">
-                {isRecording ? (
-                  <div className="audio-recording-monitor" role="status">
-                    <div className="audio-recording-header">
-                      <span className="audio-recording-badge">
-                        <span
-                          className="audio-recording-dot"
-                          aria-hidden="true"
-                        />
-                        Recording
-                      </span>
-                      <span className="audio-recording-time">
-                        {recordingDurationLabel ?? "0.0s"}
+              <div className="audio-panel-body">
+                <div className="audio-source-stage">
+                  {isRecording ? (
+                    <div className="audio-recording-monitor" role="status">
+                      <div className="audio-recording-header">
+                        <span className="audio-recording-badge">
+                          <span
+                            className="audio-recording-dot"
+                            aria-hidden="true"
+                          />
+                          Recording
+                        </span>
+                        <span className="audio-recording-time">
+                          {recordingDurationLabel ?? "0.0s"}
+                        </span>
+                      </div>
+
+                      <div className="audio-waveform" aria-hidden="true">
+                        {recordingLevels.map((level, index) => (
+                          <span
+                            key={`recording-wave-${index}`}
+                            className="audio-wave-bar"
+                            style={{
+                              height: waveformHeightForLevel(level),
+                            }}
+                          />
+                        ))}
+                      </div>
+
+                      <p className="audio-source-label">
+                        The live meter reacts to your microphone input while the
+                        recorder is active.
+                      </p>
+                    </div>
+                  ) : audioInputLabel ? (
+                    <div className="audio-source-summary">
+                      <strong>Audio source ready</strong>
+                      <span>
+                        Record again or upload a different file whenever you
+                        want to replace the current source.
                       </span>
                     </div>
-
-                    <div className="audio-waveform" aria-hidden="true">
-                      {recordingLevels.map((level, index) => (
-                        <span
-                          key={`recording-wave-${index}`}
-                          className="audio-wave-bar"
-                          style={{
-                            height: `${Math.max(16, Math.round(level * 100))}%`,
-                          }}
-                        />
-                      ))}
+                  ) : (
+                    <div className="audio-empty-state audio-empty-state-inline">
+                      No audio source selected yet. Record with the microphone
+                      or upload a file to begin.
                     </div>
+                  )}
+                </div>
 
-                    <p className="audio-source-label">
-                      The live meter reacts to your microphone input while the
-                      recorder is active.
-                    </p>
-                  </div>
-                ) : audioInputLabel ? (
-                  <div className="audio-source-summary">
-                    <strong>{audioInputLabel}</strong>
-                    <span>
-                      {taskBusy
-                        ? transcribeBusyLabel
-                        : "Ready in the browser. Record again or upload a different file."}
-                    </span>
-                  </div>
-                ) : (
-                  <div className="audio-empty-state audio-empty-state-inline">
-                    No audio source selected yet. Record with the microphone or
-                    upload a file to begin.
-                  </div>
+                <input
+                  ref={audioUploadRef}
+                  className="sr-only"
+                  type="file"
+                  accept="audio/*"
+                  onChange={onAudioFileChange}
+                />
+
+                {selectedModel.runtime.supportsTimestamps && (
+                  <label className="audio-toggle">
+                    <input
+                      type="checkbox"
+                      checked={timestampsEnabled}
+                      onChange={(event) =>
+                        onToggleTimestamps(event.target.checked)
+                      }
+                      disabled={interactionLocked || appState !== "ready"}
+                    />
+                    <span>Include timestamps</span>
+                  </label>
                 )}
               </div>
-
-              <input
-                ref={audioUploadRef}
-                className="sr-only"
-                type="file"
-                accept="audio/*"
-                onChange={onAudioFileChange}
-              />
-
-              {audioInputLabel && (
-                <p className="audio-source-label">
-                  Current input: {audioInputLabel}
-                </p>
-              )}
-
-              {selectedModel.runtime.supportsTimestamps && (
-                <label className="audio-toggle">
-                  <input
-                    type="checkbox"
-                    checked={timestampsEnabled}
-                    onChange={(event) =>
-                      onToggleTimestamps(event.target.checked)
-                    }
-                    disabled={interactionLocked || appState !== "ready"}
-                  />
-                  <span>Include timestamps</span>
-                </label>
-              )}
             </div>
 
             <div className="audio-panel-card">
               <div className="audio-panel-header">
-                <div>
+                <div className="audio-panel-header-copy">
                   <p className="section-label">Output</p>
                   <h2>Audio to text</h2>
                 </div>
@@ -340,184 +346,179 @@ function AudioScreen({
                     onClick={onDownloadTranscript}
                     disabled={!transcriptText}
                   >
-                    Download .txt
+                    Download
                   </button>
                 </div>
               </div>
 
-              {isRecording ||
-              taskBusy ||
-              (appState !== "ready" && !transcriptText) ? (
-                <div className="audio-processing-state">
-                  <div
-                    className={`audio-processing-indicator ${isRecording ? "audio-processing-indicator-recording" : ""}`}
-                    aria-hidden="true"
-                  />
-                  <div className="audio-processing-copy">
-                    <strong>{transcribeBusyLabel}</strong>
-                    <span>
-                      {isRecording
-                        ? "Stop recording to start the transcription pass."
-                        : progressLabel
-                          ? `${progressLabel} downloaded`
-                          : "The transcript will appear here when processing finishes."}
-                    </span>
-                  </div>
-                </div>
-              ) : (
-                <textarea
-                  className="audio-output-textarea"
-                  readOnly
-                  value={
-                    transcriptText ||
-                    "No transcript yet. Record audio or upload a file to get started."
-                  }
-                />
-              )}
-
-              <div className="audio-panel-actions audio-panel-actions-bottom">
-                <button
-                  className="primary-button"
-                  type="button"
-                  onClick={onUseInSpeak}
-                  disabled={!transcriptText}
-                >
-                  Use in Speak
-                </button>
-              </div>
-
-              {showTimestamps && transcriptChunks.length > 0 && (
-                <div
-                  className="timestamp-list"
-                  aria-label="Transcript timestamps"
-                >
-                  {transcriptChunks.map((chunk, index) => (
+              <div className="audio-panel-body">
+                {isRecording || isTranscriptionProcessing ? (
+                  <div className="audio-processing-state">
                     <div
-                      key={`${chunk.timestamp.join("-")}-${index}`}
-                      className="timestamp-row"
-                    >
-                      <span>
-                        {chunk.timestamp[0].toFixed(1)}s -{" "}
-                        {chunk.timestamp[1].toFixed(1)}s
-                      </span>
-                      <span>{chunk.text}</span>
+                      className={`audio-processing-indicator ${isRecording ? "audio-processing-indicator-recording" : ""}`}
+                      aria-hidden="true"
+                    />
+                    <div className="audio-processing-copy">
+                      <strong>
+                        {isRecording
+                          ? "Recording in progress"
+                          : "Generating transcript"}
+                      </strong>
+                      <span>{transcribePlaceholder}</span>
                     </div>
-                  ))}
+                  </div>
+                ) : (
+                  <textarea
+                    className="audio-output-textarea"
+                    readOnly
+                    value={transcriptText || transcribePlaceholder}
+                  />
+                )}
+
+                <div className="audio-panel-actions audio-panel-actions-bottom">
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    onClick={onUseInSpeak}
+                    disabled={!transcriptText}
+                  >
+                    Use in Speak
+                  </button>
                 </div>
-              )}
+
+                {showTimestamps && transcriptChunks.length > 0 && (
+                  <div
+                    className="timestamp-list"
+                    aria-label="Transcript timestamps"
+                  >
+                    {transcriptChunks.map((chunk, index) => (
+                      <div
+                        key={`${chunk.timestamp.join("-")}-${index}`}
+                        className="timestamp-row"
+                      >
+                        <span>
+                          {chunk.timestamp[0].toFixed(1)}s -{" "}
+                          {chunk.timestamp[1].toFixed(1)}s
+                        </span>
+                        <span>{chunk.text}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           </section>
         ) : (
           <section className="audio-content-grid">
             <div className="audio-panel-card">
-              <p className="section-label">Input</p>
-              <h2>Text to audio</h2>
-              <p className="audio-panel-copy">
-                Paste or type text, choose a voice, and generate local speech.
-              </p>
-
-              <textarea
-                className="audio-input-textarea"
-                value={speakText}
-                onChange={(event) => onSpeakTextChange(event.target.value)}
-                placeholder="Paste or type the text you want to turn into speech..."
-                disabled={interactionLocked}
-              />
-
-              <div className="audio-form-grid">
-                <label className="audio-field">
-                  <span>Voice</span>
-                  <select
-                    value={selectedVoice}
-                    onChange={(event) => onVoiceChange(event.target.value)}
-                    disabled={interactionLocked}
+              <div className="audio-panel-header">
+                <div className="audio-panel-header-copy">
+                  <p className="section-label">Input</p>
+                  <h2>Text to audio</h2>
+                </div>
+                <div className="audio-panel-actions">
+                  <button
+                    className="primary-button"
+                    type="button"
+                    onClick={onGenerateSpeech}
+                    disabled={!canGenerateSpeech}
                   >
-                    {(selectedModel.runtime.voices ?? []).map((voice) => (
-                      <option key={voice.id} value={voice.id}>
-                        {voice.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-
-                <label className="audio-field">
-                  <span>Speed</span>
-                  <input
-                    type="range"
-                    min="0.8"
-                    max="1.2"
-                    step="0.05"
-                    value={speakSpeed}
-                    onChange={(event) =>
-                      onSpeedChange(Number(event.target.value))
-                    }
-                    disabled={interactionLocked}
-                  />
-                  <span className="audio-field-value">
-                    {speakSpeed.toFixed(2)}x
-                  </span>
-                </label>
+                    {generateSpeechLabel}
+                  </button>
+                </div>
               </div>
 
-              <button
-                className="primary-button"
-                type="button"
-                onClick={onGenerateSpeech}
-                disabled={
-                  appState !== "ready" || interactionLocked || !speakText.trim()
-                }
-              >
-                Generate Speech
-              </button>
+              <div className="audio-panel-body">
+                <textarea
+                  className="audio-input-textarea"
+                  value={speakText}
+                  onChange={(event) => onSpeakTextChange(event.target.value)}
+                  placeholder="Paste or type the text you want to turn into speech..."
+                  disabled={interactionLocked}
+                />
+
+                <div className="audio-form-grid">
+                  <label className="audio-field">
+                    <span>Voice</span>
+                    <select
+                      value={selectedVoice}
+                      onChange={(event) => onVoiceChange(event.target.value)}
+                      disabled={interactionLocked}
+                    >
+                      {(selectedModel.runtime.voices ?? []).map((voice) => (
+                        <option key={voice.id} value={voice.id}>
+                          {voice.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label className="audio-field">
+                    <span>Speed</span>
+                    <input
+                      type="range"
+                      min="0.8"
+                      max="1.2"
+                      step="0.05"
+                      value={speakSpeed}
+                      onChange={(event) =>
+                        onSpeedChange(Number(event.target.value))
+                      }
+                      disabled={interactionLocked}
+                    />
+                    <span className="audio-field-value">
+                      {speakSpeed.toFixed(2)}x
+                    </span>
+                  </label>
+                </div>
+              </div>
             </div>
 
             <div className="audio-panel-card">
               <div className="audio-panel-header">
-                <div>
+                <div className="audio-panel-header-copy">
                   <p className="section-label">Output</p>
                   <h2>Generated speech</h2>
                 </div>
                 <div className="audio-panel-actions">
                   <button
-                    className="secondary-button"
+                    className="primary-button"
                     type="button"
                     onClick={onDownloadAudio}
                     disabled={!audioUrl}
                   >
-                    Download .wav
+                    Download Audio
                   </button>
                 </div>
               </div>
 
-              {taskBusy || (appState !== "ready" && !audioUrl) ? (
-                <div className="audio-processing-state">
-                  <div
-                    className="audio-processing-indicator"
-                    aria-hidden="true"
-                  />
-                  <div className="audio-processing-copy">
-                    <strong>{speakBusyLabel}</strong>
-                    <span>
-                      {progressLabel
-                        ? `${progressLabel} downloaded`
-                        : "The audio player will appear here when speech generation finishes."}
-                    </span>
+              <div className="audio-panel-body">
+                {isSpeechGenerating ? (
+                  <div className="audio-processing-state">
+                    <div
+                      className="audio-processing-indicator"
+                      aria-hidden="true"
+                    />
+                    <div className="audio-processing-copy">
+                      <strong>Generating audio</strong>
+                      <span>{speechOutputPlaceholder}</span>
+                    </div>
                   </div>
-                </div>
-              ) : audioUrl ? (
-                <div className="audio-player-card">
-                  <audio controls src={audioUrl} className="audio-player" />
-                  {durationLabel && (
-                    <p className="audio-source-label">
-                      Duration: {durationLabel}
-                    </p>
-                  )}
-                </div>
-              ) : (
-                <div className="audio-empty-state">
-                  No generated speech yet. Paste some text and generate audio.
-                </div>
-              )}
+                ) : audioUrl ? (
+                  <div className="audio-player-card">
+                    <audio controls src={audioUrl} className="audio-player" />
+                    {durationLabel && (
+                      <p className="audio-source-label">
+                        Duration: {durationLabel}
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <div className="audio-empty-state">
+                    {speechOutputPlaceholder}
+                  </div>
+                )}
+              </div>
             </div>
           </section>
         )}

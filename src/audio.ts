@@ -1,4 +1,6 @@
-const downmixToMono = (buffer: AudioBuffer) => {
+const clampSample = (value: number) => Math.max(-1, Math.min(1, value));
+
+export const downmixToMono = (buffer: AudioBuffer) => {
   if (buffer.numberOfChannels === 2) {
     const left = buffer.getChannelData(0);
     const right = buffer.getChannelData(1);
@@ -15,6 +17,103 @@ const downmixToMono = (buffer: AudioBuffer) => {
   return new Float32Array(buffer.getChannelData(0));
 };
 
+export const resampleAudio = (
+  samples: Float32Array,
+  sourceSampleRate: number,
+  targetSampleRate: number,
+) => {
+  if (
+    sourceSampleRate <= 0 ||
+    targetSampleRate <= 0 ||
+    sourceSampleRate === targetSampleRate
+  ) {
+    return new Float32Array(samples);
+  }
+
+  const targetLength = Math.max(
+    1,
+    Math.round((samples.length * targetSampleRate) / sourceSampleRate),
+  );
+  const next = new Float32Array(targetLength);
+  const ratio = sourceSampleRate / targetSampleRate;
+
+  for (let index = 0; index < targetLength; index += 1) {
+    const position = index * ratio;
+    const leftIndex = Math.floor(position);
+    const rightIndex = Math.min(samples.length - 1, leftIndex + 1);
+    const blend = position - leftIndex;
+    next[index] =
+      samples[leftIndex] + (samples[rightIndex] - samples[leftIndex]) * blend;
+  }
+
+  return next;
+};
+
+export const trimSilence = (
+  samples: Float32Array,
+  sampleRate: number,
+  threshold = 0.012,
+  paddingMs = 120,
+) => {
+  let start = 0;
+  while (start < samples.length && Math.abs(samples[start]) < threshold) {
+    start += 1;
+  }
+
+  let end = samples.length - 1;
+  while (end >= start && Math.abs(samples[end]) < threshold) {
+    end -= 1;
+  }
+
+  if (start > end) {
+    return new Float32Array(samples);
+  }
+
+  const paddingSamples = Math.max(0, Math.round((sampleRate * paddingMs) / 1000));
+  const sliceStart = Math.max(0, start - paddingSamples);
+  const sliceEnd = Math.min(samples.length, end + paddingSamples + 1);
+
+  return samples.slice(sliceStart, sliceEnd);
+};
+
+export const normalizeAudioSamples = (
+  samples: Float32Array,
+  targetPeak = 0.92,
+) => {
+  let peak = 0;
+  for (const sample of samples) {
+    peak = Math.max(peak, Math.abs(sample));
+  }
+
+  if (peak === 0) {
+    return new Float32Array(samples);
+  }
+
+  const shouldScaleUp = peak < 0.65;
+  const shouldScaleDown = peak > targetPeak;
+  if (!shouldScaleUp && !shouldScaleDown) {
+    return new Float32Array(samples);
+  }
+
+  const scale = targetPeak / peak;
+  const normalized = new Float32Array(samples.length);
+  for (let index = 0; index < samples.length; index += 1) {
+    normalized[index] = clampSample(samples[index] * scale);
+  }
+
+  return normalized;
+};
+
+export const prepareAudioSamplesForTranscription = (
+  buffer: AudioBuffer,
+  targetSampleRate: number,
+) => {
+  const mono = downmixToMono(buffer);
+  const trimmed = trimSilence(mono, buffer.sampleRate);
+  const normalized = normalizeAudioSamples(trimmed);
+  return resampleAudio(normalized, buffer.sampleRate, targetSampleRate);
+};
+
 export const decodeAudioBlob = async (
   blob: Blob,
   targetSampleRate: number,
@@ -25,15 +124,13 @@ export const decodeAudioBlob = async (
   try {
     const decoded = await audioContext.decodeAudioData(arrayBuffer);
     return {
-      samples: downmixToMono(decoded),
+      samples: prepareAudioSamplesForTranscription(decoded, targetSampleRate),
       durationSec: decoded.duration,
     };
   } finally {
     await audioContext.close();
   }
 };
-
-const clampSample = (value: number) => Math.max(-1, Math.min(1, value));
 
 export const createIdleWaveform = (barCount = 20) =>
   Array.from({ length: barCount }, (_, index) => 0.14 + ((index % 4) * 0.03));

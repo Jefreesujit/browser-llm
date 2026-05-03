@@ -14,6 +14,8 @@ import type {
   ModelDescriptor,
 } from "../types";
 
+const DEFAULT_CHAT_MODEL_ID = "onnx-community/gemma-3-270m-it-ONNX";
+
 type ModelWithCompatibility = {
   model: ModelDescriptor;
   compatibility: NonNullable<ModelDescriptor["compatibility"]>;
@@ -121,6 +123,20 @@ export const getRecommendedModel = (
     }
   }
 
+  const defaultModel = CURATED_MODELS.find(
+    (model) => model.id === DEFAULT_CHAT_MODEL_ID,
+  );
+  if (defaultModel) {
+    const decoratedDefaultModel = decorateModel(
+      defaultModel,
+      deviceCapabilities,
+      localVerdicts,
+    );
+    if (decoratedDefaultModel.compatibility?.canLoad) {
+      return decoratedDefaultModel;
+    }
+  }
+
   const preferredCategory =
     deviceCapabilities.tier === "mobile" ? "mobile_safe" : "balanced";
   const fallback = CURATED_MODELS.find(
@@ -195,6 +211,13 @@ export const getFallbackThreadModel = (
   deviceCapabilities: DeviceCapabilities,
   localVerdicts: LocalModelVerdictCache,
 ) => {
+  const defaultModel = CURATED_MODELS.find(
+    (model) => model.id === DEFAULT_CHAT_MODEL_ID,
+  );
+  if (defaultModel) {
+    return decorateModel(defaultModel, deviceCapabilities, localVerdicts);
+  }
+
   const fallback = CURATED_MODELS.find((model) =>
     deviceCapabilities.tier === "mobile"
       ? model.category === "mobile_safe" && model.task === "text"
