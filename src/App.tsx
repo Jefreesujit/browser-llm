@@ -41,7 +41,7 @@ import {
   measureWaveformLevels,
 } from "./audio";
 import { initializeChatStore } from "./chat-store";
-import AppLayout from "./components/AppLayout";
+import AppLayout, { type LayoutMode } from "./components/AppLayout";
 import AudioScreen from "./components/AudioScreen";
 import ChatScreen from "./components/ChatScreen";
 import DataPage from "./components/DataPage";
@@ -58,16 +58,16 @@ import {
   deriveStorageFeedback,
   getDefaultStorageMessage,
   loadActiveChatThreadId,
-  loadLastAudioView,
   loadLastAudioTab,
+  loadLastAudioView,
   loadLastSttModel,
   loadLastTtsModel,
   loadLastWorkspace,
   pushRecentModel,
   saveActiveChatThreadId,
   saveAppSettings,
-  saveLastAudioView,
   saveLastAudioTab,
+  saveLastAudioView,
   saveLastModel,
   saveLastSttModel,
   saveLastTtsModel,
@@ -81,8 +81,8 @@ import { useAppStore } from "./store/app-store";
 import type {
   AppSettings,
   AudioTab,
-  AudioView,
   AudioTranscriptionChunk,
+  AudioView,
   ChatStore,
   ChatThread,
   ModelDescriptor,
@@ -2014,6 +2014,7 @@ function App() {
     return (
       <AppLayout
         workspace={workspace}
+        layoutMode="workspace"
         settingsActive={false}
         dataActive={false}
         progressClassName="panel-progress panel-progress-loading"
@@ -2046,11 +2047,22 @@ function App() {
     selectedModelWithCompatibility?.id === activeAudioModelWithCompatibility.id
       ? appState
       : "loading";
+  const layoutMode: LayoutMode =
+    settingsOpen || dataOpen
+      ? "workspace"
+      : workspace === "audio"
+        ? audioView === "overview"
+          ? "landing"
+          : "workspace"
+        : activeThreadModelWithCompatibility
+          ? "workspace"
+          : "landing";
 
   return (
     <>
       <AppLayout
         workspace={workspace}
+        layoutMode={layoutMode}
         settingsActive={settingsOpen}
         dataActive={dataOpen}
         progressClassName={progressClassName}

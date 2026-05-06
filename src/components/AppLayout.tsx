@@ -2,8 +2,11 @@ import type { PropsWithChildren } from "react";
 
 import type { WorkspaceMode } from "../types";
 
+export type LayoutMode = "landing" | "workspace";
+
 type AppLayoutProps = PropsWithChildren<{
   workspace: WorkspaceMode;
+  layoutMode: LayoutMode;
   settingsActive: boolean;
   dataActive: boolean;
   progressClassName: string;
@@ -96,6 +99,7 @@ function NavIcon({ kind }: NavIconProps) {
 
 function AppLayout({
   workspace,
+  layoutMode,
   settingsActive,
   dataActive,
   progressClassName,
@@ -108,12 +112,12 @@ function AppLayout({
   children,
 }: AppLayoutProps) {
   return (
-    <div className="app-frame">
+    <div className={`app-frame app-frame-layout-${layoutMode}`}>
       <div className={progressClassName} aria-hidden="true">
         <div className="panel-progress-fill" style={{ width: progressWidth }} />
       </div>
 
-      <div className="app-shell">
+      <div className={`app-shell app-shell-layout-${layoutMode}`}>
         <aside className="app-sidebar" aria-label="Primary navigation">
           <div className="app-sidebar-brand">
             <div className="app-sidebar-logo" aria-hidden="true">

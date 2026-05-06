@@ -209,10 +209,11 @@ function AudioScreen({
           </button>
         </div>
 
-        {error && <p className="audio-task-error">{error}</p>}
+        <div className="audio-workspace-scroll">
+          {error && <p className="audio-task-error">{error}</p>}
 
-        {activeTab === "transcribe" ? (
-          <section className="audio-content-grid">
+          {activeTab === "transcribe" ? (
+            <section className="audio-content-grid">
             <div className="audio-panel-card">
               <div className="audio-panel-header">
                 <div className="audio-panel-header-copy">
@@ -407,9 +408,9 @@ function AudioScreen({
                 )}
               </div>
             </div>
-          </section>
-        ) : (
-          <section className="audio-content-grid">
+            </section>
+          ) : (
+            <section className="audio-content-grid">
             <div className="audio-panel-card">
               <div className="audio-panel-header">
                 <div className="audio-panel-header-copy">
@@ -520,8 +521,9 @@ function AudioScreen({
                 )}
               </div>
             </div>
-          </section>
-        )}
+            </section>
+          )}
+        </div>
       </div>
     </section>
   );

@@ -154,4 +154,12 @@ describe("AudioScreen", () => {
       screen.queryByDisplayValue(/No transcript yet\. Record audio or upload a file to get started\./i),
     ).not.toBeInTheDocument();
   });
+
+  it("keeps the toolbar outside a dedicated workspace scroll region", () => {
+    const { container } = render(<AudioScreen {...createAudioProps()} />);
+
+    expect(container.querySelector(".audio-toolbar")).toBeInTheDocument();
+    expect(container.querySelector(".audio-mode-tabs")).toBeInTheDocument();
+    expect(container.querySelector(".audio-workspace-scroll")).toBeInTheDocument();
+  });
 });

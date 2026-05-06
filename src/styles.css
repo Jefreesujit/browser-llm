@@ -98,6 +98,18 @@ a {
   overflow: hidden;
 }
 
+.app-frame-layout-workspace {
+  min-height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+}
+
+.app-frame-layout-landing {
+  min-height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+}
+
 .app-shell {
   --app-shell-height: calc(100dvh - 50px);
   --surface-padding-x: 28px;
@@ -109,6 +121,54 @@ a {
   gap: 22px;
   padding: 22px;
   overflow: hidden;
+}
+
+.app-shell-layout-workspace {
+  min-height: calc(100dvh - 6px);
+  height: calc(100dvh - 6px);
+  overflow: hidden;
+}
+
+.app-shell-layout-workspace .app-content {
+  overflow: hidden;
+}
+
+.app-shell-layout-landing {
+  min-height: calc(100dvh - 6px);
+  height: calc(100dvh - 6px);
+  padding: 22px;
+  overflow: hidden;
+}
+
+.app-shell-layout-landing .app-main {
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.app-shell-layout-landing .app-content {
+  display: block;
+  overflow: visible;
+}
+
+.app-shell-layout-landing .app-content > .landing-panel {
+  min-height: 0;
+  height: auto;
+  margin: 0 auto;
+  overflow: visible;
+}
+
+.app-shell-layout-landing .app-sidebar {
+  top: 22px;
+  height: calc(100dvh - 44px);
+}
+
+.app-shell-layout-landing::-webkit-scrollbar,
+.app-shell-layout-landing .app-main::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
 }
 
 .app-sidebar {
@@ -1286,6 +1346,15 @@ a {
   display: flex;
   flex-direction: column;
   gap: 22px;
+  overflow: hidden;
+}
+
+.audio-workspace-scroll {
+  min-height: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
   overflow-y: auto;
   overscroll-behavior: contain;
 }
@@ -2040,12 +2109,16 @@ a {
     overflow: auto;
   }
 
-  .app-frame {
+  .app-frame,
+  .app-frame-layout-landing,
+  .app-frame-layout-workspace {
     height: auto;
     overflow: visible;
   }
 
-  .app-shell {
+  .app-shell,
+  .app-shell-layout-landing,
+  .app-shell-layout-workspace {
     min-height: auto;
     height: auto;
     display: block;
@@ -2174,6 +2247,10 @@ a {
   .audio-mode-tab {
     min-width: 0;
     flex: 1 1 0;
+  }
+
+  .audio-workspace-scroll {
+    overflow: visible;
   }
 
   .audio-form-grid {

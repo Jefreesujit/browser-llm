@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { formatRelativeDate } from "../components/ChatHistorySidebar";
+import { formatRelativeDate } from "../format";
 
 describe("formatRelativeDate", () => {
   afterEach(() => {
