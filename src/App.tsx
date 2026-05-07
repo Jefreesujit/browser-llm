@@ -29,6 +29,7 @@ import {
   buildRecentModels,
   buildStarterModels,
   decorateModel,
+  getAudioTaskForModel,
   getFallbackAudioModel,
   getFallbackThreadModel,
   getRecommendedModel,
@@ -1144,6 +1145,14 @@ function App() {
     [audioTab, deviceCapabilities, localVerdicts, recentModels],
   );
 
+  const allRecentAudioModelsWithCompatibility = useMemo(
+    () =>
+      recentModelsWithCompatibility.filter(
+        ({ model }) => model.task === "stt" || model.task === "tts",
+      ),
+    [recentModelsWithCompatibility],
+  );
+
   const recommendedModel = useMemo(
     () => getRecommendedModel(deviceCapabilities, localVerdicts),
     [deviceCapabilities, localVerdicts],
@@ -1215,11 +1224,13 @@ function App() {
     pickerMode === "audio" ? audioCuratedSections : curatedSections;
   const pickerRecentModels =
     pickerMode === "audio"
-      ? recentAudioModelsWithCompatibility
+      ? pickerTab === "recent"
+        ? allRecentAudioModelsWithCompatibility
+        : recentAudioModelsWithCompatibility
       : recentModelsWithCompatibility;
   const pickerAvailableTabs =
     pickerMode === "audio"
-      ? (["curated", "recent"] satisfies PickerTab[])
+      ? ([] satisfies PickerTab[])
       : (["curated", "search", "recent"] satisfies PickerTab[]);
 
   const openPicker = (tab: PickerTab) => {
@@ -1333,6 +1344,9 @@ function App() {
       }
 
       setSelectedModel(storedModel);
+      setWorkspace("audio");
+      setAudioView(task);
+      setAudioTab(task);
       setPickerOpen(false);
       setLoadingModelId(null);
     } catch (selectionIssue) {
@@ -1343,6 +1357,10 @@ function App() {
           : "Unable to prepare this model for loading.",
       );
     }
+  };
+
+  const handleAudioPickerModelLoad = (model: ModelDescriptor) => {
+    void requestAudioModelLoad(model, getAudioTaskForModel(model));
   };
 
   const createNewThread = async (preferredModel?: ModelDescriptor) => {
@@ -1724,8 +1742,12 @@ function App() {
     await activateModel(recommendedModel);
   };
 
+  const handleAudioGetStarted = () => {
+    switchToAudioWorkspace("transcribe");
+  };
+
   const handleSearchModels = () => {
-    openPicker(pickerMode === "audio" ? "curated" : "search");
+    openPicker(pickerMode === "audio" ? "recent" : "search");
   };
 
   const handleBrowseAudio = () => {
@@ -2122,6 +2144,7 @@ function App() {
               getStartedDisabled={!recommendedModel?.compatibility?.canLoad}
               globalMessage={error ?? chatStorageWarning}
               onGetStarted={handleGetStarted}
+              onAudioGetStarted={handleAudioGetStarted}
               onSearchModels={handleSearchModels}
               onTryTranscribe={() => switchToAudioWorkspace("transcribe")}
               onTrySpeak={() => switchToAudioWorkspace("speak")}
@@ -2224,6 +2247,7 @@ function App() {
             getStartedDisabled={!recommendedModel?.compatibility?.canLoad}
             globalMessage={error ?? chatStorageWarning}
             onGetStarted={handleGetStarted}
+            onAudioGetStarted={handleAudioGetStarted}
             onSearchModels={handleSearchModels}
             onTryTranscribe={() => switchToAudioWorkspace("transcribe")}
             onTrySpeak={() => switchToAudioWorkspace("speak")}
@@ -2250,12 +2274,16 @@ function App() {
         searchError={searchError}
         loadingModelId={loadingModelId}
         availableTabs={pickerAvailableTabs}
+        audioTask={pickerMode === "audio" ? audioTab : undefined}
         onClose={() => setPickerOpen(false)}
         onTabChange={setPickerTab}
         onSearchQueryChange={setSearchQuery}
         onToggleFilter={toggleSearchFilter}
         onLoadModel={
-          pickerMode === "audio" ? requestAudioModelLoad : requestModelLoad
+          pickerMode === "audio" ? handleAudioPickerModelLoad : requestModelLoad
+        }
+        onAudioTaskChange={
+          pickerMode === "audio" ? setAudioTab : undefined
         }
       />
       {pendingModel && (

@@ -9,6 +9,7 @@ import {
 } from "../models";
 import { loadLastModel } from "../storage";
 import type {
+  AudioTab,
   DeviceCapabilities,
   LocalModelVerdictCache,
   ModelDescriptor,
@@ -197,6 +198,10 @@ export const buildRecentAudioModels = (
     ({ model }) =>
       task === "transcribe" ? model.task === "stt" : model.task === "tts",
   );
+
+export const getAudioTaskForModel = (
+  model: Pick<ModelDescriptor, "task">,
+): AudioTab => (model.task === "tts" ? "speak" : "transcribe");
 
 export const getFallbackAudioModel = (task: "transcribe" | "speak") => {
   const models = task === "transcribe" ? AUDIO_STT_MODELS : AUDIO_TTS_MODELS;

@@ -118,8 +118,8 @@ a {
   height: calc(100dvh - 6px);
   display: flex;
   align-items: stretch;
-  gap: 22px;
-  padding: 22px;
+  gap: 0;
+  padding: 0;
   overflow: hidden;
 }
 
@@ -136,11 +136,12 @@ a {
 .app-shell-layout-landing {
   min-height: calc(100dvh - 6px);
   height: calc(100dvh - 6px);
-  padding: 22px;
+  padding: 0;
   overflow: hidden;
 }
 
 .app-shell-layout-landing .app-main {
+  padding: 0 22px 0 0;
   overflow-y: auto;
   overflow-x: hidden;
   scrollbar-width: none;
@@ -148,6 +149,8 @@ a {
 }
 
 .app-shell-layout-landing .app-content {
+  flex: 0 0 auto;
+  min-height: auto;
   display: block;
   overflow: visible;
 }
@@ -155,13 +158,8 @@ a {
 .app-shell-layout-landing .app-content > .landing-panel {
   min-height: 0;
   height: auto;
-  margin: 0 auto;
+  margin: 22px auto 42px;
   overflow: visible;
-}
-
-.app-shell-layout-landing .app-sidebar {
-  top: 22px;
-  height: calc(100dvh - 44px);
 }
 
 .app-shell-layout-landing::-webkit-scrollbar,
@@ -175,9 +173,10 @@ a {
   width: 96px;
   flex: 0 0 96px;
   position: sticky;
-  top: 22px;
+  top: 0;
   align-self: flex-start;
-  height: var(--app-shell-height);
+  height: calc(100dvh - 44px);
+  margin: 22px 0 22px 22px;
   display: flex;
   flex-direction: column;
   gap: 20px;
@@ -264,6 +263,7 @@ a {
   flex: 1;
   display: flex;
   flex-direction: column;
+  padding: 22px 22px 22px 0;
   overflow: hidden;
 }
 
@@ -578,11 +578,11 @@ a {
 
 .audio-landing-card {
   display: grid;
-  gap: 14px;
+  gap: 10px;
   padding: 22px;
-  border: 1px solid rgba(16, 33, 39, 0.08);
+  border: 1px solid rgba(16, 33, 39, 0.1);
   border-radius: 24px;
-  background: rgba(255, 255, 255, 0.55);
+  background: rgba(255, 253, 248, 0.9);
   text-align: left;
   transition:
     transform 120ms ease,
@@ -593,7 +593,18 @@ a {
 .audio-landing-card:hover {
   transform: translateY(-1px);
   border-color: rgba(16, 33, 39, 0.14);
-  background: rgba(255, 255, 255, 0.72);
+  background: rgba(255, 253, 248, 0.98);
+}
+
+.audio-landing-card-heading {
+  display: grid;
+  gap: 2px;
+}
+
+.audio-landing-card .section-label,
+.audio-toolbar-copy .section-label,
+.audio-panel-header-copy .section-label {
+  margin-bottom: 4px;
 }
 
 .audio-landing-card h2 {
@@ -611,10 +622,20 @@ a {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-top: 10px;
+  margin-top: 6px;
   color: #6b6557;
   font-size: 0.88rem;
   font-weight: 600;
+}
+
+.audio-landing-card-cta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.42rem 0.74rem;
+  border-radius: 999px;
+  background: rgba(16, 33, 39, 0.08);
+  color: #102127;
 }
 
 .audio-starter-section {
@@ -623,7 +644,7 @@ a {
 
 .starter-copy {
   display: grid;
-  gap: 6px;
+  gap: 4px;
   margin-bottom: 16px;
 }
 
@@ -1388,7 +1409,7 @@ a {
 
 .audio-toolbar-copy-text {
   max-width: 42rem;
-  margin: 8px 0 0;
+  margin: 6px 0 0;
   font-size: 0.94rem;
 }
 
@@ -1463,7 +1484,7 @@ a {
 
 .audio-panel-header-copy {
   display: grid;
-  gap: 4px;
+  gap: 2px;
   min-width: 0;
 }
 
@@ -2054,14 +2075,19 @@ a {
 
 @media (max-width: 900px) {
   .app-shell {
-    gap: 16px;
-    padding: 16px;
+    gap: 0;
+    padding: 0;
   }
 
   .app-sidebar {
     width: 84px;
     flex-basis: 84px;
+    margin: 16px 0 16px 16px;
     padding-inline: 10px;
+  }
+
+  .app-main {
+    padding: 16px 16px 16px 0;
   }
 
   .chat-workspace-content {

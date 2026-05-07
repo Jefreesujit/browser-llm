@@ -24,25 +24,34 @@ describe("desktop layout stylesheet", () => {
       /\.app-shell-layout-landing\s*\{[\s\S]*height:\s*calc\(100dvh - 6px\);[\s\S]*overflow:\s*hidden;/,
     );
     expect(stylesheet).toMatch(
-      /\.app-shell-layout-landing\s+\.app-main\s*\{[\s\S]*overflow-y:\s*auto;[\s\S]*overflow-x:\s*hidden;/,
+      /\.app-shell-layout-landing\s+\.app-main\s*\{[\s\S]*padding:\s*0\s+22px\s+0\s+0;[\s\S]*overflow-y:\s*auto;[\s\S]*overflow-x:\s*hidden;/,
     );
     expect(stylesheet).toMatch(
       /\.app-shell-layout-landing\s+\.app-main\s*\{[\s\S]*scrollbar-width:\s*none;[\s\S]*-ms-overflow-style:\s*none;/,
     );
     expect(stylesheet).toMatch(
+      /\.app-shell\s*\{[\s\S]*gap:\s*0;[\s\S]*padding:\s*0;/,
+    );
+    expect(stylesheet).toMatch(
+      /\.app-main\s*\{[\s\S]*padding:\s*22px\s+22px\s+22px\s+0;/,
+    );
+    expect(stylesheet).toMatch(
+      /\.app-sidebar\s*\{[\s\S]*margin:\s*22px\s+0\s+22px\s+22px;/,
+    );
+    expect(stylesheet).toMatch(
       /\.app-shell-layout-landing::-webkit-scrollbar,\s*[\s\S]*\.app-shell-layout-landing\s+\.app-main::-webkit-scrollbar\s*\{[\s\S]*display:\s*none;/,
     );
     expect(stylesheet).toMatch(
-      /\.app-shell-layout-landing\s*\{[\s\S]*padding:\s*22px;/,
+      /\.app-shell-layout-landing\s*\{[\s\S]*padding:\s*0;/,
     );
     expect(stylesheet).toMatch(
-      /\.app-shell-layout-landing\s+\.app-content\s*\{[\s\S]*display:\s*block;[\s\S]*overflow:\s*visible;/,
+      /\.app-shell-layout-landing\s+\.app-content\s*\{[\s\S]*flex:\s*0\s+0\s+auto;[\s\S]*min-height:\s*auto;[\s\S]*display:\s*block;[\s\S]*overflow:\s*visible;/,
     );
     expect(stylesheet).toMatch(
-      /\.app-shell-layout-landing\s+\.app-content\s*>\s*\.landing-panel\s*\{[\s\S]*height:\s*auto;[\s\S]*margin:\s*0\s+auto;[\s\S]*overflow:\s*visible;/,
+      /\.app-shell-layout-landing\s+\.app-content\s*>\s*\.landing-panel\s*\{[\s\S]*height:\s*auto;[\s\S]*margin:\s*22px\s+auto\s+42px;[\s\S]*overflow:\s*visible;/,
     );
     expect(stylesheet).toMatch(
-      /\.app-shell-layout-landing\s+\.app-sidebar\s*\{[\s\S]*top:\s*22px;[\s\S]*height:\s*calc\(100dvh - 44px\);/,
+      /\.app-sidebar\s*\{[\s\S]*top:\s*0;[\s\S]*height:\s*calc\(100dvh - 44px\);[\s\S]*margin:\s*22px\s+0\s+22px\s+22px;/,
     );
     expect(stylesheet).toMatch(
       /\.app-shell-layout-workspace\s+\.app-content\s*\{[\s\S]*overflow:\s*hidden;/,

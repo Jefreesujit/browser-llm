@@ -13,9 +13,9 @@ type ModelCacheSettingsTabProps = {
   onClearAllDownloadedModels: () => void;
 };
 
-type InstalledModelGroupKey = "chat" | "voice" | "other";
+type InstalledModelGroupKey = "chat" | "audio" | "other";
 
-const GROUP_ORDER: InstalledModelGroupKey[] = ["chat", "voice", "other"];
+const GROUP_ORDER: InstalledModelGroupKey[] = ["chat", "audio", "other"];
 
 const GROUP_COPY: Record<
   InstalledModelGroupKey,
@@ -25,9 +25,9 @@ const GROUP_COPY: Record<
     label: "Chat Models",
     description: "Text and vision model files cached for chat use.",
   },
-  voice: {
-    label: "Voice Models",
-    description: "Speech and transcription model files cached for voice use.",
+  audio: {
+    label: "Audio Models",
+    description: "Speech and transcription model files cached for audio use.",
   },
   other: {
     label: "Other Models",
@@ -45,7 +45,7 @@ const getInstalledModelGroup = (
   }
 
   if (canonicalModel.task === "stt" || canonicalModel.task === "tts") {
-    return "voice";
+    return "audio";
   }
 
   return "chat";
@@ -61,7 +61,7 @@ const groupInstalledModels = (installedModels: InstalledModelEntry[]) =>
     },
     {
       chat: [],
-      voice: [],
+      audio: [],
       other: [],
     },
   );

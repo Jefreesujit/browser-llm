@@ -149,7 +149,7 @@ function AudioScreen({
         <header className="audio-toolbar">
           <div className="audio-toolbar-copy">
             <p className="section-label">
-              Voice Workspace
+              Audio Workspace
             </p>
             <h2>{activeTab === "transcribe" ? "Transcribe" : "Speak"}</h2>
             <p className="audio-toolbar-copy-text">

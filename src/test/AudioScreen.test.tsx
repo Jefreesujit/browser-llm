@@ -59,6 +59,13 @@ afterEach(() => {
 });
 
 describe("AudioScreen", () => {
+  it("uses Audio naming in the workspace header", () => {
+    render(<AudioScreen {...createAudioProps()} />);
+
+    expect(screen.getByText("Audio Workspace")).toBeInTheDocument();
+    expect(screen.queryByText("Voice Workspace")).not.toBeInTheDocument();
+  });
+
   it("uses compact one-line action labels in the transcribe header", () => {
     render(<AudioScreen {...createAudioProps()} />);
 

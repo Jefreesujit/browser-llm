@@ -19,7 +19,7 @@ type AppLayoutProps = PropsWithChildren<{
 }>;
 
 type NavIconProps = {
-  kind: "chat" | "voice" | "settings" | "data" | "github";
+  kind: "chat" | "audio" | "settings" | "data" | "github";
 };
 
 function NavIcon({ kind }: NavIconProps) {
@@ -38,7 +38,7 @@ function NavIcon({ kind }: NavIconProps) {
           <path d="M4 6.5a2.5 2.5 0 0 1 2.5-2.5h11A2.5 2.5 0 0 1 20 6.5v7A2.5 2.5 0 0 1 17.5 16H9l-4.4 3.3c-.3.2-.6 0-.6-.3V16.8A2.5 2.5 0 0 1 4 14.5z" />
         </svg>
       );
-    case "voice":
+    case "audio":
       return (
         <svg
           viewBox="0 0 24 24"
@@ -155,8 +155,8 @@ function AppLayout({
               onClick={() => onSelectWorkspace("audio")}
               disabled={workspaceSwitchDisabled}
             >
-              <NavIcon kind="voice" />
-              <span>Voice</span>
+              <NavIcon kind="audio" />
+              <span>Audio</span>
             </button>
           </nav>
 
@@ -221,8 +221,8 @@ function AppLayout({
             onClick={() => onSelectWorkspace("audio")}
             disabled={workspaceSwitchDisabled}
           >
-            <NavIcon kind="voice" />
-            <span>Voice</span>
+            <NavIcon kind="audio" />
+            <span>Audio</span>
           </button>
           <button
             className={`mobile-nav-item ${settingsActive ? "mobile-nav-item-active" : ""}`}

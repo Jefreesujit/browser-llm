@@ -24,6 +24,7 @@ type LandingScreenProps = {
   getStartedDisabled: boolean;
   globalMessage?: string | null;
   onGetStarted: () => void;
+  onAudioGetStarted: () => void;
   onSearchModels: () => void;
   onTryTranscribe: () => void;
   onTrySpeak: () => void;
@@ -43,6 +44,7 @@ function LandingScreen({
   getStartedDisabled,
   globalMessage,
   onGetStarted,
+  onAudioGetStarted,
   onSearchModels,
   onTryTranscribe,
   onTrySpeak,
@@ -56,7 +58,7 @@ function LandingScreen({
         <div className="topbar landing-topbar">
           <div className="topbar-copy">
             <p className="eyebrow">
-              {mode === "chat" ? "Private Browser Chat" : "Private Browser Voice"}
+              {mode === "chat" ? "Private Browser Chat" : "Private Browser Audio"}
             </p>
             <h1 className="landing-title">
               {mode === "chat" ? (
@@ -131,16 +133,9 @@ function LandingScreen({
                 <button
                   className="primary-button landing-button"
                   type="button"
-                  onClick={onTryTranscribe}
+                  onClick={onAudioGetStarted}
                 >
-                  Try Transcribe
-                </button>
-                <button
-                  className="secondary-button landing-button"
-                  type="button"
-                  onClick={onTrySpeak}
-                >
-                  Try Speak
+                  Get Started
                 </button>
                 <button
                   className="secondary-button landing-button"
@@ -191,15 +186,17 @@ function LandingScreen({
               type="button"
               onClick={onTryTranscribe}
             >
-              <p className="section-label">Transcribe</p>
-              <h2>Audio to text</h2>
+              <div className="audio-landing-card-heading">
+                <p className="section-label">Transcribe</p>
+                <h2>Audio to text</h2>
+              </div>
               <p>
                 Record with the microphone or upload an audio file and keep the
                 transcript local.
               </p>
               <div className="audio-landing-card-footer">
                 <span>{selectedSttModel.label}</span>
-                <span>Open Transcribe</span>
+                <span className="audio-landing-card-cta">Open Transcribe</span>
               </div>
             </button>
 
@@ -208,15 +205,17 @@ function LandingScreen({
               type="button"
               onClick={onTrySpeak}
             >
-              <p className="section-label">Speak</p>
-              <h2>Text to audio</h2>
+              <div className="audio-landing-card-heading">
+                <p className="section-label">Speak</p>
+                <h2>Text to audio</h2>
+              </div>
               <p>
                 Paste text, pick a voice, and generate browser-local speech with
                 a matching output panel.
               </p>
               <div className="audio-landing-card-footer">
                 <span>{selectedTtsModel.label}</span>
-                <span>Open Speak</span>
+                <span className="audio-landing-card-cta">Open Speak</span>
               </div>
             </button>
           </div>

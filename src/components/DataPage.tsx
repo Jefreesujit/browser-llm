@@ -97,7 +97,7 @@ function DataPage({
                 <p className="section-label">Model Cache</p>
                 <h3>Downloaded model files</h3>
                 <p>
-                  Review cached browser model files grouped by chat and voice,
+                  Review cached browser model files grouped by chat and audio,
                   then remove them without touching your generation defaults.
                 </p>
               </div>
