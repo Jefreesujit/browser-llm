@@ -1,8 +1,8 @@
 import { useDeferredValue } from "react";
 
 import { useDialogScrollLock } from "../hooks/useDialogScrollLock";
-import type { CuratedCategory } from "../models";
 import type {
+  AudioTab,
   CompatibilityReport,
   ModelDescriptor,
   PickerTab,
@@ -11,7 +11,11 @@ import type {
 import ModelCard from "./ModelCard";
 
 type CategorizedModel = {
-  category: CuratedCategory;
+  category: {
+    key: string;
+    label: string;
+    description: string;
+  };
   models: Array<{ model: ModelDescriptor; compatibility: CompatibilityReport }>;
 };
 
@@ -32,11 +36,14 @@ type ModelPickerDialogProps = {
   searchLoading: boolean;
   searchError: string | null;
   loadingModelId: string | null;
+  availableTabs?: PickerTab[];
+  audioTask?: AudioTab;
   onClose: () => void;
   onTabChange: (tab: PickerTab) => void;
   onSearchQueryChange: (value: string) => void;
   onToggleFilter: (filter: keyof SearchFilters) => void;
   onLoadModel: (model: ModelDescriptor) => void;
+  onAudioTaskChange?: (tab: AudioTab) => void;
 };
 
 const TAB_LABELS: Record<PickerTab, string> = {
@@ -63,14 +70,18 @@ function ModelPickerDialog({
   searchLoading,
   searchError,
   loadingModelId,
+  availableTabs = ["curated", "search", "recent"],
+  audioTask,
   onClose,
   onTabChange,
   onSearchQueryChange,
   onToggleFilter,
   onLoadModel,
+  onAudioTaskChange,
 }: ModelPickerDialogProps) {
   const deferredSearchQuery = useDeferredValue(searchQuery);
   const hasSearchQuery = deferredSearchQuery.trim().length > 0;
+  const isAudioPicker = Boolean(audioTask && onAudioTaskChange);
 
   useDialogScrollLock(open);
 
@@ -98,22 +109,64 @@ function ModelPickerDialog({
           </button>
         </header>
 
-        <div className="dialog-tabs" role="tablist" aria-label="Model tabs">
-          {(Object.keys(TAB_LABELS) as PickerTab[]).map((tab) => (
+        {isAudioPicker ? (
+          <div
+            className="dialog-tabs"
+            role="tablist"
+            aria-label="Audio model tasks"
+          >
             <button
-              key={tab}
-              className={`dialog-tab ${tab === activeTab ? "dialog-tab-active" : ""}`}
+              className={`dialog-tab ${activeTab === "recent" ? "dialog-tab-active" : ""}`}
               type="button"
               role="tab"
-              aria-selected={tab === activeTab}
-              onClick={() => onTabChange(tab)}
+              aria-selected={activeTab === "recent"}
+              onClick={() => onTabChange("recent")}
             >
-              {TAB_LABELS[tab]}
+              Recent
             </button>
-          ))}
-        </div>
+            <button
+              className={`dialog-tab ${activeTab !== "recent" && audioTask === "transcribe" ? "dialog-tab-active" : ""}`}
+              type="button"
+              role="tab"
+              aria-selected={activeTab !== "recent" && audioTask === "transcribe"}
+              onClick={() => {
+                onTabChange("curated");
+                onAudioTaskChange?.("transcribe");
+              }}
+            >
+              Transcribe
+            </button>
+            <button
+              className={`dialog-tab ${activeTab !== "recent" && audioTask === "speak" ? "dialog-tab-active" : ""}`}
+              type="button"
+              role="tab"
+              aria-selected={activeTab !== "recent" && audioTask === "speak"}
+              onClick={() => {
+                onTabChange("curated");
+                onAudioTaskChange?.("speak");
+              }}
+            >
+              Speak
+            </button>
+          </div>
+        ) : availableTabs.length > 0 ? (
+          <div className="dialog-tabs" role="tablist" aria-label="Model tabs">
+            {availableTabs.map((tab) => (
+              <button
+                key={tab}
+                className={`dialog-tab ${tab === activeTab ? "dialog-tab-active" : ""}`}
+                type="button"
+                role="tab"
+                aria-selected={tab === activeTab}
+                onClick={() => onTabChange(tab)}
+              >
+                {TAB_LABELS[tab]}
+              </button>
+            ))}
+          </div>
+        ) : null}
 
-        {activeTab === "search" && (
+        {!isAudioPicker && activeTab === "search" && (
           <section className="search-panel">
             <label className="search-input-wrap">
               <span className="sr-only">Search models</span>
@@ -152,7 +205,39 @@ function ModelPickerDialog({
         )}
 
         <div className="dialog-content">
-          {activeTab === "curated" &&
+          {isAudioPicker && activeTab === "recent" && (
+            <section className="picker-section">
+              {recentModels.length === 0 ? (
+                <div className="picker-empty">
+                  <p>Audio models you load successfully will appear here.</p>
+                </div>
+              ) : (
+                <>
+                  <div className="picker-section-header">
+                    <h3>Recent</h3>
+                    <p>
+                      Recently loaded audio models on this device. Loading one
+                      will open the matching transcribe or speak workspace.
+                    </p>
+                  </div>
+                  <div className="picker-grid">
+                    {recentModels.map(({ model, compatibility }) => (
+                      <ModelCard
+                        key={model.id}
+                        model={model}
+                        compatibility={compatibility}
+                        onLoad={onLoadModel}
+                        loading={loadingModelId === model.id}
+                      />
+                    ))}
+                  </div>
+                </>
+              )}
+            </section>
+          )}
+
+          {((isAudioPicker && activeTab !== "recent") ||
+            activeTab === "curated") &&
             curatedSections.map((section) => (
               <section key={section.category.key} className="picker-section">
                 <div className="picker-section-header">
@@ -173,7 +258,7 @@ function ModelPickerDialog({
               </section>
             ))}
 
-          {activeTab === "recent" && (
+          {!isAudioPicker && activeTab === "recent" && (
             <section className="picker-section">
               {recentModels.length === 0 ? (
                 <div className="picker-empty">

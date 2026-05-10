@@ -17,7 +17,9 @@ const PARAMETER_REGEX = /(\d+(?:\.\d+)?)\s*([bm])/i;
 const toParameterValue = (rawValue: number, unit: string) =>
   unit.toLowerCase() === "m" ? rawValue / 1000 : rawValue;
 
-export const inferParameterInfo = (...candidates: Array<string | undefined>) => {
+export const inferParameterInfo = (
+  ...candidates: Array<string | undefined>
+) => {
   for (const candidate of candidates) {
     if (!candidate) {
       continue;
@@ -31,7 +33,8 @@ export const inferParameterInfo = (...candidates: Array<string | undefined>) => 
     const value = Number(match[1]);
     const unit = match[2];
     const parameterValue = toParameterValue(value, unit);
-    const paramsLabel = unit.toLowerCase() === "m" ? `${value}M params` : `${value}B params`;
+    const paramsLabel =
+      unit.toLowerCase() === "m" ? `${value}M params` : `${value}B params`;
 
     if (parameterValue <= 0.5) {
       return { parameterTier: "XS" as const, paramsLabel };
@@ -69,6 +72,21 @@ const isChatCapable = (model: ModelDescriptor) =>
   model.hf.tags.includes("conversational") ||
   Boolean(model.hf.hasChatTemplate) ||
   SEARCH_ALLOWLIST.has(model.id);
+
+const isAudioCapable = (model: ModelDescriptor) => {
+  if (model.task === "stt") {
+    return model.hf.pipelineTag === "automatic-speech-recognition";
+  }
+
+  if (model.task === "tts") {
+    return (
+      model.hf.pipelineTag === "text-to-speech" ||
+      model.hf.pipelineTag === "text-to-audio"
+    );
+  }
+
+  return false;
+};
 
 const isBlockedByPolicy = (model: ModelDescriptor) =>
   BLOCKED_MODEL_IDS.has(model.id) ||
@@ -115,11 +133,12 @@ export const getCompatibilityReport = (
 
   if (localVerdict?.status === "failed_on_device") {
     return {
-      verdict: "unsupported",
-      badgeLabel: "Unsupported",
-      secondaryLabel: "Unsupported on this device",
-      reason: "This model previously failed to load on this device.",
-      canLoad: false,
+      verdict: "experimental",
+      badgeLabel: "Retry load",
+      secondaryLabel: "Previously failed",
+      reason:
+        "This model previously failed to load on this device, but you can retry after clearing cached model files or reloading the app.",
+      canLoad: true,
     };
   }
 
@@ -128,17 +147,36 @@ export const getCompatibilityReport = (
       verdict: "unsupported",
       badgeLabel: "Unsupported",
       secondaryLabel: "Unsupported in browser",
-      reason: "This model does not expose the browser-compatibility signals this app requires.",
+      reason:
+        "This model does not expose the browser-compatibility signals this app requires.",
       canLoad: false,
     };
   }
 
-  if (!isChatCapable(model)) {
+  if (
+    (model.task === "text" || model.task === "vision") &&
+    !isChatCapable(model)
+  ) {
     return {
       verdict: "unsupported",
       badgeLabel: "Unsupported",
       secondaryLabel: "Not chat-ready",
-      reason: "This model does not look chat-capable from the available metadata.",
+      reason:
+        "This model does not look chat-capable from the available metadata.",
+      canLoad: false,
+    };
+  }
+
+  if (
+    (model.task === "stt" || model.task === "tts") &&
+    !isAudioCapable(model)
+  ) {
+    return {
+      verdict: "unsupported",
+      badgeLabel: "Unsupported",
+      secondaryLabel: "Not audio-ready",
+      reason:
+        "This model does not expose the browser audio task metadata this app requires.",
       canLoad: false,
     };
   }
@@ -163,7 +201,12 @@ export const getCompatibilityReport = (
     };
   }
 
-  if (device.tier === "mobile" && model.parameterTier === "L") {
+  if (
+    device.tier === "mobile" &&
+    (model.parameterTier === "L" ||
+      model.category === "desktop_experimental" ||
+      model.category === "audio_desktop_experimental")
+  ) {
     return {
       verdict: "too_large",
       badgeLabel: "Likely too large",
@@ -186,7 +229,11 @@ export const getCompatibilityReport = (
     };
   }
 
-  if (model.parameterTier === "L") {
+  if (
+    model.parameterTier === "L" ||
+    model.category === "desktop_experimental" ||
+    model.category === "audio_desktop_experimental"
+  ) {
     return {
       verdict: "experimental",
       badgeLabel: "Experimental",
@@ -201,7 +248,8 @@ export const getCompatibilityReport = (
       verdict: "verified",
       badgeLabel: "Verified",
       secondaryLabel: getTierLabel(model.parameterTier),
-      reason: "This model is part of the supported browser-first set for this device tier.",
+      reason:
+        "This model is part of the supported browser-first set for this device tier.",
       canLoad: true,
     };
   }
@@ -210,7 +258,8 @@ export const getCompatibilityReport = (
     verdict: "likely",
     badgeLabel: "Likely works",
     secondaryLabel: getTierLabel(model.parameterTier),
-    reason: "This model matches the app's compatibility heuristics but is not yet verified on this device.",
+    reason:
+      "This model matches the app's compatibility heuristics but is not yet verified on this device.",
     canLoad: true,
   };
 };

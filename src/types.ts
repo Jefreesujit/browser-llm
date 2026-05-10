@@ -1,7 +1,10 @@
 export type ChatRole = "system" | "user" | "assistant";
 
-export type Screen = "landing" | "chat";
+export type WorkspaceMode = "chat" | "audio";
+export type AudioView = "overview" | "transcribe" | "speak";
+export type Screen = "landing" | "chat" | "audio";
 export type ModelLoadState = "loading" | "ready";
+export type AudioTab = "transcribe" | "speak";
 
 export type ChatAttachment = {
   name: string;
@@ -55,7 +58,7 @@ export type ChatThread = {
   summaryUpToSequence: number;
 };
 
-export type ModelTask = "text" | "vision";
+export type ModelTask = "text" | "vision" | "stt" | "tts";
 export type ModelSource = "curated" | "search" | "recent";
 export type CompatibilityVerdict =
   | "verified"
@@ -73,9 +76,17 @@ export type CuratedCategoryKey =
   | "coding"
   | "reasoning"
   | "vision"
-  | "desktop_experimental";
+  | "desktop_experimental"
+  | "audio_recommended"
+  | "audio_smaller"
+  | "audio_desktop_experimental";
 export type Dtype = "q4f16" | "q4" | "q8" | "int8" | "uint8" | "fp16" | "fp32";
 export type VisionLoaderKind = "qwen3_5" | "lfm2_5_vl";
+export type AudioLoaderKind =
+  | "pipeline_asr"
+  | "pipeline_tts"
+  | "speecht5_tts"
+  | "supertonic_tts";
 export type ChatPersistenceStatus =
   | "ready"
   | "fallback_local_storage"
@@ -116,6 +127,13 @@ export type ModelRuntimeConfig = {
   contextWindowTokens: number;
   chatTemplateOptions?: Record<string, boolean | number | string>;
   visionLoaderKind?: VisionLoaderKind;
+  audioLoaderKind?: AudioLoaderKind;
+  supportsTimestamps?: boolean;
+  audioSampleRate?: number;
+  defaultLanguage?: string;
+  defaultVoice?: string;
+  voices?: Array<{ id: string; label: string }>;
+  speakerEmbeddingsUrl?: string;
 };
 
 export type ModelDescriptor = {
@@ -156,6 +174,11 @@ export type GenerationRequestState = {
   threadId: string;
   requestId: string;
   modelId: string;
+};
+
+export type AudioTranscriptionChunk = {
+  text: string;
+  timestamp: [number, number];
 };
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
@@ -230,6 +253,27 @@ export type WorkerRequest =
         image?: File | null;
         options: GenerationOptions;
       };
+    }
+  | {
+      type: "TRANSCRIBE_AUDIO";
+      payload: {
+        requestId: string;
+        model: ModelDescriptor;
+        audio: Float32Array;
+        returnTimestamps: boolean;
+        fileName?: string | null;
+        durationSec?: number | null;
+      };
+    }
+  | {
+      type: "SYNTHESIZE_SPEECH";
+      payload: {
+        requestId: string;
+        model: ModelDescriptor;
+        text: string;
+        voice?: string;
+        speed?: number;
+      };
     };
 
 export type WorkerResponse =
@@ -270,6 +314,34 @@ export type WorkerResponse =
         text: string;
         summary: string | null;
         summaryUpToSequence: number;
+      };
+    }
+  | {
+      type: "TASK_STATUS";
+      payload: {
+        requestId: string;
+        modelId: string;
+        status: string;
+      };
+    }
+  | {
+      type: "TRANSCRIPTION_DONE";
+      payload: {
+        requestId: string;
+        modelId: string;
+        text: string;
+        chunks?: AudioTranscriptionChunk[];
+        durationSec?: number | null;
+      };
+    }
+  | {
+      type: "SPEECH_DONE";
+      payload: {
+        requestId: string;
+        modelId: string;
+        audioBuffer: ArrayBuffer;
+        sampleRate: number;
+        durationSec: number;
       };
     }
   | {

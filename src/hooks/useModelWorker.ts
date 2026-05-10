@@ -24,9 +24,12 @@ export const useModelWorker = ({
       onMessage(event);
     },
   );
-  const postWorkerMessage = useCallback((message: WorkerRequest) => {
-    workerRef.current?.postMessage(message);
-  }, []);
+  const postWorkerMessage = useCallback(
+    (message: WorkerRequest, transfer?: Transferable[]) => {
+      workerRef.current?.postMessage(message, transfer ?? []);
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!enabled) {

@@ -1,6 +1,7 @@
 import { getCompatibilityReport } from "../compatibility";
-import type { CuratedCategory } from "../models";
 import {
+  AUDIO_STT_MODELS,
+  AUDIO_TTS_MODELS,
   CURATED_CATEGORIES,
   CURATED_MODELS,
   getCuratedModelsForCategory,
@@ -8,10 +9,13 @@ import {
 } from "../models";
 import { loadLastModel } from "../storage";
 import type {
+  AudioTab,
   DeviceCapabilities,
   LocalModelVerdictCache,
   ModelDescriptor,
 } from "../types";
+
+const DEFAULT_CHAT_MODEL_ID = "onnx-community/gemma-3-270m-it-ONNX";
 
 type ModelWithCompatibility = {
   model: ModelDescriptor;
@@ -19,7 +23,11 @@ type ModelWithCompatibility = {
 };
 
 export type CategorizedModelSection = {
-  category: CuratedCategory;
+  category: {
+    key: string;
+    label: string;
+    description: string;
+  };
   models: ModelWithCompatibility[];
 };
 
@@ -105,7 +113,7 @@ export const getRecommendedModel = (
   localVerdicts: LocalModelVerdictCache,
 ) => {
   const lastModel = loadLastModel();
-  if (lastModel) {
+  if (lastModel && (lastModel.task === "text" || lastModel.task === "vision")) {
     const decoratedLastModel = decorateModel(
       lastModel,
       deviceCapabilities,
@@ -113,6 +121,20 @@ export const getRecommendedModel = (
     );
     if (decoratedLastModel.compatibility?.canLoad) {
       return decoratedLastModel;
+    }
+  }
+
+  const defaultModel = CURATED_MODELS.find(
+    (model) => model.id === DEFAULT_CHAT_MODEL_ID,
+  );
+  if (defaultModel) {
+    const decoratedDefaultModel = decorateModel(
+      defaultModel,
+      deviceCapabilities,
+      localVerdicts,
+    );
+    if (decoratedDefaultModel.compatibility?.canLoad) {
+      return decoratedDefaultModel;
     }
   }
 
@@ -127,10 +149,80 @@ export const getRecommendedModel = (
     : null;
 };
 
+const AUDIO_SECTION_COPY = {
+  audio_recommended: {
+    key: "audio_recommended",
+    label: "Recommended",
+    description:
+      "Best first-run quality for this audio task in a browser-first experience.",
+  },
+  audio_smaller: {
+    key: "audio_smaller",
+    label: "Fallbacks",
+    description:
+      "Alternative browser-friendly options with different quality, size, and runtime tradeoffs.",
+  },
+  audio_desktop_experimental: {
+    key: "audio_desktop_experimental",
+    label: "Desktop Experimental",
+    description:
+      "Larger models with stronger output quality when your desktop can handle them.",
+  },
+} as const;
+
+export const buildAudioSections = (
+  task: "transcribe" | "speak",
+  deviceCapabilities: DeviceCapabilities,
+  localVerdicts: LocalModelVerdictCache,
+): CategorizedModelSection[] => {
+  const sourceModels =
+    task === "transcribe" ? AUDIO_STT_MODELS : AUDIO_TTS_MODELS;
+
+  return Object.values(AUDIO_SECTION_COPY).map((category) => ({
+    category,
+    models: sourceModels
+      .filter((model) => model.category === category.key)
+      .map((model) =>
+        attachCompatibility(model, deviceCapabilities, localVerdicts),
+      ),
+  }));
+};
+
+export const buildRecentAudioModels = (
+  task: "transcribe" | "speak",
+  recentModels: ModelDescriptor[],
+  deviceCapabilities: DeviceCapabilities,
+  localVerdicts: LocalModelVerdictCache,
+) =>
+  buildRecentModels(recentModels, deviceCapabilities, localVerdicts).filter(
+    ({ model }) =>
+      task === "transcribe" ? model.task === "stt" : model.task === "tts",
+  );
+
+export const getAudioTaskForModel = (
+  model: Pick<ModelDescriptor, "task">,
+): AudioTab => (model.task === "tts" ? "speak" : "transcribe");
+
+export const getFallbackAudioModel = (task: "transcribe" | "speak") => {
+  const models = task === "transcribe" ? AUDIO_STT_MODELS : AUDIO_TTS_MODELS;
+  return (
+    models.find((model) => model.category === "audio_recommended") ??
+    models[0] ??
+    null
+  );
+};
+
 export const getFallbackThreadModel = (
   deviceCapabilities: DeviceCapabilities,
   localVerdicts: LocalModelVerdictCache,
 ) => {
+  const defaultModel = CURATED_MODELS.find(
+    (model) => model.id === DEFAULT_CHAT_MODEL_ID,
+  );
+  if (defaultModel) {
+    return decorateModel(defaultModel, deviceCapabilities, localVerdicts);
+  }
+
   const fallback = CURATED_MODELS.find((model) =>
     deviceCapabilities.tier === "mobile"
       ? model.category === "mobile_safe" && model.task === "text"

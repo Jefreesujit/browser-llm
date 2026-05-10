@@ -1,5 +1,8 @@
+import { getCanonicalCuratedModel } from "./models";
 import type {
   AppSettings,
+  AudioTab,
+  AudioView,
   ChatPersistenceStatus,
   ChatThread,
   LocalModelVerdictCache,
@@ -7,10 +10,16 @@ import type {
   ModelDescriptor,
   PickerTab,
   StorageWriteResult,
+  WorkspaceMode,
 } from "./types";
 import { DEFAULT_APP_SETTINGS } from "./types";
 
 const LAST_MODEL_KEY = "webllm:last-model";
+const LAST_STT_MODEL_KEY = "webllm:last-stt-model";
+const LAST_TTS_MODEL_KEY = "webllm:last-tts-model";
+const LAST_AUDIO_TAB_KEY = "webllm:last-audio-tab";
+const LAST_AUDIO_VIEW_KEY = "webllm:last-audio-view";
+const LAST_WORKSPACE_KEY = "webllm:last-workspace";
 const RECENT_MODELS_KEY = "webllm:recent-models";
 const PICKER_TAB_KEY = "webllm:picker-tab";
 const SHOW_EXPERIMENTAL_KEY = "webllm:show-experimental";
@@ -116,14 +125,80 @@ export const deriveStorageFeedback = (
   };
 };
 
+const canonicalizeStoredModel = (
+  model: ModelDescriptor | null,
+): ModelDescriptor | null => {
+  if (!model) {
+    return null;
+  }
+
+  const canonicalModel = getCanonicalCuratedModel(model.id);
+  if (!canonicalModel) {
+    return model;
+  }
+
+  return {
+    ...canonicalModel,
+    source: model.source,
+  };
+};
+
 export const loadLastModel = () =>
-  readJson<ModelDescriptor | null>(LAST_MODEL_KEY, null);
+  canonicalizeStoredModel(
+    readJson<ModelDescriptor | null>(LAST_MODEL_KEY, null),
+  );
 export const saveLastModel = (model: ModelDescriptor) =>
   writeJson(LAST_MODEL_KEY, model);
 export const clearLastModel = () => removeValue(LAST_MODEL_KEY);
 
+export const loadLastSttModel = () =>
+  canonicalizeStoredModel(
+    readJson<ModelDescriptor | null>(LAST_STT_MODEL_KEY, null),
+  );
+export const saveLastSttModel = (model: ModelDescriptor) =>
+  writeJson(LAST_STT_MODEL_KEY, model);
+export const clearLastSttModel = () => removeValue(LAST_STT_MODEL_KEY);
+
+export const loadLastTtsModel = () =>
+  canonicalizeStoredModel(
+    readJson<ModelDescriptor | null>(LAST_TTS_MODEL_KEY, null),
+  );
+export const saveLastTtsModel = (model: ModelDescriptor) =>
+  writeJson(LAST_TTS_MODEL_KEY, model);
+export const clearLastTtsModel = () => removeValue(LAST_TTS_MODEL_KEY);
+
+export const loadLastAudioTab = () =>
+  readJson<AudioTab>(LAST_AUDIO_TAB_KEY, "transcribe");
+export const saveLastAudioTab = (tab: AudioTab) =>
+  writeJson(LAST_AUDIO_TAB_KEY, tab);
+export const clearLastAudioTab = () => removeValue(LAST_AUDIO_TAB_KEY);
+
+export const loadLastAudioView = () => {
+  const stored = readJson<AudioView | null>(LAST_AUDIO_VIEW_KEY, null);
+  if (stored === "overview" || stored === "transcribe" || stored === "speak") {
+    return stored;
+  }
+
+  return loadLastAudioTab() === "speak" ? "speak" : "overview";
+};
+export const saveLastAudioView = (view: AudioView) =>
+  writeJson(LAST_AUDIO_VIEW_KEY, view);
+export const clearLastAudioView = () => removeValue(LAST_AUDIO_VIEW_KEY);
+
+export const loadLastWorkspace = () => {
+  const stored = readJson<WorkspaceMode | null>(LAST_WORKSPACE_KEY, null);
+  return stored === "audio" ? "audio" : "chat";
+};
+
+export const saveLastWorkspace = (workspace: WorkspaceMode) =>
+  writeJson(LAST_WORKSPACE_KEY, workspace);
+
+export const clearLastWorkspace = () => removeValue(LAST_WORKSPACE_KEY);
+
 export const loadRecentModels = () =>
-  readJson<ModelDescriptor[]>(RECENT_MODELS_KEY, []);
+  readJson<ModelDescriptor[]>(RECENT_MODELS_KEY, []).map((model) =>
+    canonicalizeStoredModel(model),
+  ) as ModelDescriptor[];
 export const saveRecentModels = (models: ModelDescriptor[]) =>
   writeJson(RECENT_MODELS_KEY, models);
 export const clearRecentModels = () => removeValue(RECENT_MODELS_KEY);
@@ -192,6 +267,11 @@ export const clearLegacyChatThreads = () =>
 export const clearLightweightAppState = () => {
   const results = [
     clearLastModel(),
+    clearLastSttModel(),
+    clearLastTtsModel(),
+    clearLastAudioTab(),
+    clearLastAudioView(),
+    clearLastWorkspace(),
     clearRecentModels(),
     clearModelVerdictCache(),
     removeValue(PICKER_TAB_KEY),

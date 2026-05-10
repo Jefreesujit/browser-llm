@@ -42,4 +42,20 @@ describe("getCompatibilityReport", () => {
     expect(report.verdict).toBe("too_large");
     expect(report.canLoad).toBe(false);
   });
+
+  it("allows retrying a model that previously failed on this device", () => {
+    const report = getCompatibilityReport(
+      createModelDescriptor(),
+      createDeviceCapabilities(),
+      {
+        "test/model": {
+          status: "failed_on_device",
+          lastLoadedAt: new Date("2026-04-14T00:00:00.000Z").toISOString(),
+        },
+      },
+    );
+
+    expect(report.badgeLabel).toBe("Retry load");
+    expect(report.canLoad).toBe(true);
+  });
 });
