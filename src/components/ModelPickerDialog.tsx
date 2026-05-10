@@ -131,7 +131,7 @@ function ModelPickerDialog({
               aria-selected={activeTab !== "recent" && audioTask === "transcribe"}
               onClick={() => {
                 onTabChange("curated");
-                onAudioTaskChange("transcribe");
+                onAudioTaskChange?.("transcribe");
               }}
             >
               Transcribe
@@ -143,7 +143,7 @@ function ModelPickerDialog({
               aria-selected={activeTab !== "recent" && audioTask === "speak"}
               onClick={() => {
                 onTabChange("curated");
-                onAudioTaskChange("speak");
+                onAudioTaskChange?.("speak");
               }}
             >
               Speak
